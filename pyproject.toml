@@ -1,0 +1,22 @@
+# Makes the code in src/ installable, so `python -m login_correlation ...` works from any folder.
+# Install once (inside .venv):  pip install -e .
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "login_correlation"
+version = "0.1.0"
+description = "Detection of failed-login series in logs with OpenMP, MPI and OpenCL (PRIR university project)"
+requires-python = ">=3.11"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

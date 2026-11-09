@@ -1,68 +1,30 @@
-# Prerequisites
-*.d
-
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Linker files
-*.ilk
-
-# Debugger Files
-*.pdb
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-*.so.*
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
-# Build directories
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
 build/
-Build/
-build-*/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
 
-# CMake generated files
-CMakeFiles/
-CMakeCache.txt
-cmake_install.cmake
-Makefile
-install_manifest.txt
-compile_commands.json
+# Numba cache
+*.nbi
+*.nbc
 
-# Temporary files
-*.tmp
-*.log
-*.bak
-*.swp
+# Generated datasets and results (only data/sample and data/README.md are kept in git)
+data/*
+!data/sample/
+!data/README.md
+results/
 
-# vcpkg
-vcpkg_installed/
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
 
-# debug information files
-*.dwo
-
-# test output & cache
-Testing/
-.cache/
+# Word lock files
+~$*.docx

@@ -1,0 +1,31 @@
+# Default settings. Every value can be overridden on the command line
+# (e.g. --window 30 --threshold 10). Explanation: docs/ARCHITECTURE.md, sections 2 and 8.
+
+[rule]
+window_s  = 60    # W: window length in seconds; the window is (t - W, t]
+threshold = 5     # N: failed logins of one account inside the window that raise an alarm
+
+[generator]
+seed          = 42
+n_users       = 10000
+n_events      = 1000000
+start_ts      = 1767225600   # 2026-01-01 00:00:00 UTC
+duration_s    = 604800       # 7 days
+typo_rate     = 0.03         # share of normal logins preceded by 1-2 typos (FAIL)
+n_empty_users = 50           # accounts in users.csv that have no events
+
+# How many labelled attack / edge-case scenarios to insert (docs/ARCHITECTURE.md section 8.1)
+[generator.scenarios]
+brute_force        = 40
+slow_brute         = 10
+typo_burst         = 30
+edge_exact_window  = 10
+edge_inside_window = 10
+same_timestamp     = 10
+empty_username     = 3
+
+[bench]
+repeats = 5
+sizes   = [100000, 1000000, 5000000, 10000000]
+threads = [1, 2, 4, 6, 8, 10, 12]
+ranks   = [1, 2, 4, 6, 8]

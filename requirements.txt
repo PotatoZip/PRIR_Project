@@ -1,0 +1,7 @@
+numpy>=1.26
+pandas>=2.1
+numba>=0.59        # OpenMP part (prange on the OpenMP threading layer)
+mpi4py>=4.0        # MPI part - also needs MS-MPI installed (see README.md, Setup)
+pyopencl>=2024.1   # OpenCL part - needs the GPU driver
+matplotlib>=3.8    # charts
+pytest>=8.0        # tests

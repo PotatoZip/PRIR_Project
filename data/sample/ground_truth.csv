@@ -1,0 +1,3 @@
+scenario_id,type,user,start_ts,end_ts,n_events,expected_alarm
+S0001,brute_force,bob,1767225610,1767225625,6,True
+S0002,slow_brute,carol,1767225700,1767225820,5,True
