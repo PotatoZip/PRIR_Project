@@ -16,10 +16,10 @@ All commands run in PowerShell, in the project folder, with the environment acti
 | 2 | Data generation | labelled attacks hidden in normal traffic | ✅ M1 |
 | 3 | Detection: reference | the alarm list and the per-account summary | ✅ |
 | 4 | Detection quality | precision and recall | ✅ M2 |
-| 5 | OpenMP | split by accounts and by time + halo, speed-up | ⬜ M3 |
+| 5 | OpenMP | split by accounts and by time + halo, speed-up | ✅ M3 |
 | 6 | MPI | processes, one owner per alarm | ⬜ M4 |
 | 7 | OpenCL | GPU pipeline, encoding cost shown separately | ⬜ M5 |
-| 8 | Same results everywhere | every backend = reference | ⬜ M3–M5 |
+| 8 | Same results everywhere | every backend = reference | 🟡 OpenMP done; MPI, OpenCL to come |
 | 9 | Stream replay | time-to-alarm | ⬜ M6 |
 | 10 | Performance charts | events/s, speed-up | ⬜ M7 |
 
@@ -141,5 +141,45 @@ What to explain:
 * Change the rule and run `detect` + `evaluate` again. For example, `--threshold 3` makes
   the rule more sensitive: it can catch slower attacks but raises more false alarms.
 
-## 5–10. Coming with the next milestones ⬜
+## 5. OpenMP ✅
+
+**a) Run it and check that the result is the same as the reference**
+```powershell
+python -m login_correlation detect --backend reference --data data\d10m --out results\d10m_ref
+python -m login_correlation detect --backend openmp --threads 12 --split users --data data\d10m --out results\d10m_omp_users
+python -m login_correlation detect --backend openmp --threads 12 --split time  --data data\d10m --out results\d10m_omp_time
+python -m login_correlation compare results\d10m_ref results\d10m_omp_users
+python -m login_correlation compare results\d10m_ref results\d10m_omp_time
+Get-Content results\d10m_omp_time\timings.json
+```
+Expected: `IDENTICAL` for both files, both times. In `timings.json`, point out
+`"threading_layer": "omp"` (real OpenMP threads), `"threads": 12`, `"chunks": 12` and
+`"halo_events"`: the failures that a chunk had to read from before its own start, so that
+windows crossing a chunk border are counted correctly.
+
+**b) Speed-up**
+```powershell
+python -m login_correlation bench --data data\d10m      # about 1 min; 5 runs per setting
+start results\plots\speedup_openmp.png
+```
+Expected (10 M events; numbers vary between runs, and are better on the charger):
+
+| Threads | split by accounts | split by time + halo |
+|---|---|---|
+| 1 | 0.29 s | 0.48 s |
+| 12 | 0.14 s (2.0×) | 0.20 s (2.4×) |
+
+What to explain:
+* **Two ways to split the work**, as the task asks: by accounts (each thread gets whole
+  users) and by time (each thread gets a time slice plus a halo of W seconds from the
+  previous slice). Both give the same alarms as the reference.
+* **Why not 12×?** The counting part does scale about 10×, but most of the remaining time is
+  preparing data (limited by memory speed) and building tables (sequential). This is
+  Amdahl's law. The laptop's 8 E-cores are also slower than its 2 P-cores.
+* **In perspective:** detection on 10 M events takes 0.14 s, while reading the CSV and
+  encoding it takes about 13 s.
+* The design story (4 versions of the preparation step, see docs/ARCHITECTURE.md §7.1)
+  shows why cache size and memory access patterns matter in parallel code.
+
+## 6–10. Coming with the next milestones ⬜
 These sections are filled in as each milestone is finished (see [ROADMAP.md](ROADMAP.md)).

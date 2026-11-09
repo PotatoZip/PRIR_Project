@@ -157,6 +157,7 @@ def run_detect(args, cfg) -> int:
             "threads": args.threads,
             "split": args.split,
             "device": args.device,
+            **result.info,
         },
     )
     work = sum(

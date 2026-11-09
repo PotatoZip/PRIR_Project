@@ -66,7 +66,8 @@ overrides the file for one run. Use `--config other.toml` for a different file.
 | | `typo_rate` | 0.03 | share of normal logins with 1–2 typos first | — |
 | | `n_empty_users` | 50 | accounts in `users.csv` that have no events | — |
 | `[generator.scenarios]` | `<type> = count` | 3–40 | how many labelled scenarios of each type to insert (types: docs/ARCHITECTURE.md §8.1) | — |
-| `[bench]` | `repeats`, `sizes`, `threads`, `ranks` | 5, … | benchmark settings (milestone M7) | — |
+| `[bench]` | `repeats`, `threads` | 5, [1, 2, 4, 6, 8, 10, 12] | OpenMP benchmark: runs per setting, thread counts | — |
+| | `sizes`, `ranks` | … | data-size and MPI benchmarks (milestone M7) | — |
 
 Backend options (command line only):
 

@@ -47,15 +47,44 @@
   On 10 M events, reading the CSV (about 5 s) and encoding (about 5.5 s) now take far longer
   than the detection itself. This is the Amdahl's law point for the report.
 
-### M3: OpenMP (`backends/openmp.py`)
+### M3: OpenMP (`backends/openmp.py`) ✅
 
-- [ ] Variant A `--split users`: filter → sort → segments → `prange` over users; `--threads`
-- [ ] Variant B `--split time`: time chunks per thread + halo of W s (docs/ARCHITECTURE.md §7.1)
-- [ ] JIT warm-up, not included in the timings
-- [ ] Load balancing: compare "no balancing" with "users mixed by size"
+- [x] Variant A `--split users`: parallel grouping by user → `prange` over users; `--threads`
+- [x] Variant B `--split time`: time chunks per thread + halo of W s (docs/ARCHITECTURE.md §7.1)
+- [x] Parallel preparation (`group_by_user`, radix partitioning) and parallel per-user statistics
+- [x] JIT warm-up, not included in the timings (`compile` is reported separately; later runs
+  load the compiled code from Numba's disk cache in under 1 s)
+- [x] Load balancing: users mixed by size (`balance=True`, default) vs. not mixed (tested both)
+- [x] `python -m login_correlation bench --data data\d10m` → `results/bench_openmp.csv` + `results/plots/speedup_openmp.png`
+- [x] Tests: `tests/test_openmp.py` (46 tests: building blocks, chunk border inside an attack,
+  all failures in one second, more threads than failures, both splits × 1–12 threads,
+  benchmark code) + 8 OpenMP settings in `tests/test_backends.py`
+- [x] Demonstration step written in `docs/DEMO.md` §5
 - **Done when:** both variants give output identical to `reference` for every thread count
   (including the test where a chunk border cuts through an attack), and you have a speed-up
   chart comparing A and B.
+- **Result (2026-11-09):** output identical to `reference` in all tests, and byte-identical
+  CSV files on 1 M and 10 M events for both splits. 10 M events, median of 5 runs
+  (laptop **on battery**; repeat on the charger for the report):
+
+  | Threads | split by accounts | speed-up | split by time + halo | speed-up |
+  |---|---|---|---|---|
+  | 1 | 0.285 s | 1.00 | 0.480 s | 1.00 |
+  | 2 | 0.262 s | 1.09 | 0.353 s | 1.36 |
+  | 4 | 0.228 s | 1.25 | 0.308 s | 1.56 |
+  | 6 | 0.175 s | 1.63 | 0.246 s | 1.95 |
+  | 8 | 0.147 s | 1.94 | 0.222 s | 2.16 |
+  | 12 | 0.139 s | 2.05 | 0.197 s | 2.43 |
+
+  The counting kernel itself scales well (time split: 0.140 s → 0.014 s, 10× on 12 threads),
+  but it is a small part of the work. Preparing the data is limited by memory speed, and
+  building the output tables is sequential (Amdahl's law). The 2 P-cores + 8 E-cores also
+  limit the gain after 4 threads. Detection takes 0.14 s, while reading and encoding the
+  CSV take about 13 s, so the parallel part is already not the bottleneck.
+- **Lessons (four versions of the preparation step):** per-thread arrays were too big for the
+  cache (slower with more threads); a full scatter was limited by memory speed; "owner
+  computes" suffered from branch mispredictions; **radix partitioning** finally scaled.
+  The details are in the `openmp.py` docstring, which is good material for the report.
 
 ### M4: MPI (`backends/mpi.py`)
 

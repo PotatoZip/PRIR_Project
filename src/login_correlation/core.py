@@ -184,10 +184,17 @@ def build_summary(events: EventArrays, max_count: np.ndarray, ep_user: np.ndarra
     U = len(events.users)
     n_events, first, last = _user_stats(events.user_id, events.ts, U)
     n_fail = np.bincount(events.user_id, weights=events.is_fail, minlength=U).astype(np.int64)
+    return summary_frame(events.users, n_events, n_fail, first, last, max_count, ep_user)
+
+
+def summary_frame(users, n_events, n_fail, first, last, max_count, ep_user) -> pd.DataFrame:
+    """Per-user arrays -> summary DataFrame. Shared by build_summary (one thread) and
+    backends/openmp.py (statistics computed in parallel)."""
+    U = len(users)
     no_events = n_events == 0  # empty accounts: first_ts / last_ts are empty (NA)
     df = pd.DataFrame(
         {
-            "user": pd.Series(events.users, dtype=object),
+            "user": pd.Series(users, dtype=object),
             "n_events": n_events,
             "n_fail": n_fail,
             "n_success": n_events - n_fail,
