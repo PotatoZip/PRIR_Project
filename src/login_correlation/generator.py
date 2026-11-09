@@ -11,7 +11,8 @@ How the data is built:
 
 1. Normal traffic. A "session" is one SUCCESS login. With probability `typo_rate` it is
    preceded by 1-2 FAILs a few seconds earlier (a mistyped password). Some users are much
-   more active than others (activity ~ 1 / rank^0.8). Each user logs in from 1-3 home IPs
+   more active than others (activity ~ 1 / rank^0.8, capped at 20x the average user, so the
+   busiest account is still a plausible person). Each user logs in from 1-3 home IPs
    in 10.0.0.0/8. Session times are uniform over [start_ts, start_ts + duration_s).
 
 2. Scenarios (docs/ARCHITECTURE.md section 8.1) are inserted at random times. Each one gets
@@ -39,7 +40,8 @@ from login_correlation.common import EMPTY_USER, FAIL, SUCCESS, GeneratorParams,
 
 SCENARIO_TYPES = ("brute_force", "slow_brute", "typo_burst", "edge_exact_window",
                   "edge_inside_window", "same_timestamp", "empty_username")
-NEEDS_N_AT_LEAST_2 = {"slow_brute", "typo_burst", "edge_exact_window", "edge_inside_window"}
+MAX_ACTIVITY = 20  # the busiest user logs in at most 20x as often as the average user
+NEEDS_N_AT_LEAST_2 ={"slow_brute", "typo_burst", "edge_exact_window", "edge_inside_window"}
 
 
 @dataclass
@@ -71,6 +73,11 @@ def normal_traffic(p: GeneratorParams, rng: np.random.Generator):
     n_sessions = max(1, round(p.n_events / (1 + 1.5 * p.typo_rate)))
 
     weights = 1.0 / np.arange(1, p.n_users + 1) ** 0.8
+    weights /= weights.sum()
+    # Cap: no user is more than MAX_ACTIVITY x as active as the average user. Without the cap
+    # the busiest account gets ~2 % of ALL logins (one every few seconds for a whole week),
+    # its ordinary typos pile up into fake "attacks", and precision becomes meaningless.
+    weights = np.minimum(weights, MAX_ACTIVITY / p.n_users)
     weights = rng.permutation(weights / weights.sum())         # activity not tied to the name
     s_user = rng.choice(p.n_users, size=n_sessions, p=weights)
     s_ts = p.start_ts + rng.integers(0, p.duration_s, n_sessions)

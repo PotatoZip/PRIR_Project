@@ -15,7 +15,7 @@ All commands run in PowerShell, in the project folder, with the environment acti
 | 1 | Tests | the rule's edge cases are handled correctly | ✅ |
 | 2 | Data generation | labelled attacks hidden in normal traffic | ✅ M1 |
 | 3 | Detection: reference | the alarm list and the per-account summary | ✅ |
-| 4 | Detection quality | precision and recall | ⬜ M2 |
+| 4 | Detection quality | precision and recall | ✅ M2 |
 | 5 | OpenMP | split by accounts and by time + halo, speed-up | ⬜ M3 |
 | 6 | MPI | processes, one owner per alarm | ⬜ M4 |
 | 7 | OpenCL | GPU pipeline, encoding cost shown separately | ⬜ M5 |
@@ -48,13 +48,15 @@ Worth showing: `tests/test_rule.py`. Its test names read like the edge cases fro
 ## 2. Data generation ✅
 
 ```powershell
-python -m login_correlation generate --out data\demo                  # 1 M events, about 5 s
-python -m login_correlation generate --out data\d10m --events 10000000   # 10 M events, about 1 min, 400 MB
+python -m login_correlation generate --out data\demo                                    # 1 M events, about 4 s
+python -m login_correlation generate --out data\d10m --events 10000000 --users 100000   # 10 M events, about 1 min, 400 MB
 ```
 Expected output (1 M):
 ```
-generated 1,001,506 events (1,024 in 113 scenarios), 10,000 users + 50 empty accounts in 5.1 s
+generated 1,001,504 events (1,024 in 113 scenarios), 10,000 users + 50 empty accounts in 4.2 s
 ```
+For bigger datasets, raise `--users` too (about 100 events per user). Otherwise each user
+logs in unrealistically often.
 
 Show the three files:
 ```powershell
@@ -64,7 +66,8 @@ Import-Csv data\demo\ground_truth.csv | Group-Object type | Select-Object Name, 
 ```
 
 What to explain:
-* **Normal traffic:** a few very active users and many quiet ones. Each user logs in from
+* **Normal traffic:** a few very active users and many quiet ones (the busiest one at most
+  20× the average). Each user logs in from
   1–3 home IPs (10.x.x.x), and about 3 % of logins start with 1–2 typos.
 * **Labelled scenarios** (`ground_truth.csv`, which the detector never reads):
 
@@ -94,17 +97,49 @@ python -m login_correlation detect --data data\demo --out results\demo_ref   # 1
 ```
 Expected on `data\sample`: one alarm, for **bob** (6 failures in 15 s). **carol** has 5
 failures 30 s apart, which is too slow for W=60/N=5, so there is no alarm. **dave** is an
-empty account: he is in the summary with zeros.
+empty account: the account is in the summary with zeros.
 
-Expected on `data\demo` (seed 42, W=60, N=5), measured on this laptop:
-* 65 alarms. 63 of them match labelled attacks.
-* All `brute_force`, `edge_inside_window`, `same_timestamp` and `empty_username`
-  scenarios are found.
-* No alarm for `typo_burst` or `edge_exact_window`. All `slow_brute` are missed, as designed.
-* 2 alarms come from very active normal users who made typos close together. These are
-  realistic false positives, and a good talking point about precision.
+Expected on `data\demo` (seed 42, W=60, N=5): 63 alarms (step 4 checks them against the labels).
 
 Try other rule settings: `--threshold 3` or `--window 300`.
 
-## 4–10. Coming with the next milestones ⬜
+## 4. Detection quality ✅
+
+```powershell
+python -m login_correlation evaluate --data data\demo --results results\demo_ref
+```
+Expected output (1 M events, seed 42, W=60, N=5), measured on this laptop:
+```
+alarms            63  (true: 63, false: 0 = 0 on harmless scenarios + 0 from normal traffic)
+attack scenarios  63 of 73 found
+precision         1.0
+recall            0.863
+f1                0.9265
+detection delay   mean 20.7 s, median 14.0 s, max 59 s (from the first event of the attack to the alarm, in log time)
+
+scenario type         expected  scenarios  with alarm
+brute_force              alarm         40          40
+edge_exact_window         none         10           0
+edge_inside_window       alarm         10          10
+empty_username           alarm          3           3
+same_timestamp           alarm         10          10
+slow_brute               alarm         10           0
+typo_burst                none         30           0
+```
+The full numbers are also saved in `results\demo_ref\metrics.json`.
+
+What to explain:
+* **Precision** = how many alarms are real attacks. **Recall** = how many attacks were found.
+* The **edge cases behave exactly as specified**: 59 s span → alarm, 60 s span → no alarm,
+  same second → alarm, empty user field → alarm for `<empty>`.
+* **Recall is not 1.0 on purpose:** `slow_brute` attacks stay below N failures per W seconds,
+  so this rule cannot see them. This is an honest limit of a single sliding-window rule.
+* **Detection delay** is the log time from the attack's first event to the alarm. It is
+  never more than W (59 s max), because the N-th failure must arrive first.
+* On 10 M events (`data\d10m`) the result is almost the same: precision 0.98 (1 false alarm
+  from a normal user's typos), recall 0.863.
+* Change the rule and run `detect` + `evaluate` again. For example, `--threshold 3` makes
+  the rule more sensitive: it can catch slower attacks but raises more false alarms.
+
+## 5–10. Coming with the next milestones ⬜
 These sections are filled in as each milestone is finished (see [ROADMAP.md](ROADMAP.md)).

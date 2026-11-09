@@ -167,7 +167,10 @@ PRIR_Project/
 │       └── opencl.py          OpenCL (PyOpenCL, GPU)
 │
 ├── tests/
-│   ├── test_rule.py           edge cases of the rule
+│   ├── conftest.py            shared test helper: random data with every edge case
+│   ├── test_rule.py           edge cases of the rule (run on reference AND core)
+│   ├── test_core.py           fast core: building blocks + core = reference
+│   ├── test_evaluate.py       precision / recall / delay on hand-made cases
 │   ├── test_cli.py            command line + config on data/sample
 │   ├── test_generator.py      generator: format, repeatability, scenarios behave as labelled
 │   └── test_backends.py       every backend = reference (incl. MPI via mpiexec)
@@ -231,6 +234,21 @@ correct at the edges of data chunks.
 
 Alarm merging (step 5) runs **after** all counts are known, on data in the original order.
 So an attack that is cut by a chunk border is still one alarm.
+
+**Where each step is in the code** (`src/login_correlation/core.py`, milestone M2):
+
+| Step | Function | Notes |
+|---|---|---|
+| 1–2 | `sort_failures` | `np.lexsort` (stable) + `np.bincount` / `cumsum` for the user segments |
+| 3–4 | `window_counts` | Numba `@njit(parallel=True)`, `prange` over users, `lower_bound` per failure |
+| 5 | `find_episodes` → `alarms_frame` | Numba, one pass over the failures (O(F)) |
+| 6 | `build_summary` | Numba, one pass over all events + `np.bincount` |
+| all | `detect` | the whole pipeline; `warm_up()` compiles everything before timing |
+
+`core.detect` gives exactly the same output as `backends/reference.py`; this is tested on
+random data, on generated data and on every edge case.
+`common.normalize_alarms` / `normalize_summary` fix the columns, types and row order, so all
+backends write identical CSV files.
 
 ---
 
@@ -343,11 +361,33 @@ before and after it, so the label is always right. Scenarios that cannot exist w
 
 The same `--seed` always gives the same data.
 
-### 8.2 Metrics
-* An alarm **matches** a scenario if it is the same user and the time ranges overlap.
-* **Precision** = alarms that match an expected scenario / all alarms
-* **Recall** = expected scenarios that were found / all expected scenarios
-* Also: results per scenario type, and detection delay.
+User activity follows `1/rank^0.8` but is **capped at 20× the average user**. Without the cap
+the busiest account would get about 2 % of all logins (one every few seconds for a week),
+and its ordinary typos would look like attacks. Keep about 100 events per user
+(1 M events → 10 000 users, 10 M events → `--users 100000`).
+
+### 8.2 Metrics (`evaluate.py`)
+* An alarm **matches** a scenario if it is the same user and the time ranges overlap
+  (`alarm.start_ts ≤ scenario.end_ts` and `alarm.end_ts ≥ scenario.start_ts`).
+* **Precision** = alarms that match a scenario with `expected_alarm = True` / all alarms
+* **Recall** = scenarios with `expected_alarm = True` found by at least one alarm / all such scenarios
+* **F1** = 2 · P · R / (P + R)
+* **Detection delay** = first matching alarm's `trigger_ts` − scenario `start_ts`, in log
+  time (mean, median, max). It shows how many seconds of the attack pass before the rule
+  can fire.
+* **False positives** are split by cause: an alarm on a scenario labelled harmless
+  (`typo_burst`, `edge_exact_window`), which would mean a bug, or an alarm from normal
+  traffic (a user who made several typos close together).
+* Everything is also given **per scenario type**.
+
+Measured with seed 42, W = 60, N = 5:
+
+| Data | Alarms | Precision | Recall | F1 | Median delay |
+|---|---|---|---|---|---|
+| 1 M events, 10 k users | 63 | 1.00 | 0.863 | 0.93 | 14 s |
+| 10 M events, 100 k users | 64 | 0.98 | 0.863 | 0.92 | 15 s |
+
+All 10 missed scenarios are `slow_brute`, the attack type the rule is known not to catch.
 
 ### 8.3 Timing
 Every backend reports the same phases: `load`, `encode`, `prepare`, `compute`, `merge`,

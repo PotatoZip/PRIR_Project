@@ -197,16 +197,18 @@ def main(argv=None) -> int:
         if args.cmd == "detect":
             return run_detect(args, cfg)
         if args.cmd == "evaluate":
-            from login_correlation.evaluate import evaluate
+            from login_correlation.evaluate import evaluate, format_report
 
+            text = {"user": str}  # account names are text, even if they look like numbers
             metrics = evaluate(
-                pd.read_csv(Path(args.results) / "alarms.csv"),
-                pd.read_csv(Path(args.data) / "ground_truth.csv"),
+                pd.read_csv(Path(args.results) / "alarms.csv", dtype=text),
+                pd.read_csv(Path(args.data) / "ground_truth.csv", dtype=text),
             )
             (Path(args.results) / "metrics.json").write_text(
                 json.dumps(metrics, indent=2)
             )
-            print(json.dumps(metrics, indent=2))
+            print(format_report(metrics))
+            print(f"\n(full metrics saved to {Path(args.results) / 'metrics.json'})")
             return 0
         if args.cmd == "replay":
             from login_correlation.evaluate import replay

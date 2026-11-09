@@ -59,7 +59,7 @@ overrides the file for one run. Use `--config other.toml` for a different file.
 | `[rule]` | `window_s` | 60 | **W**: window length in seconds; the window is `(t − W, t]` | `--window` |
 | | `threshold` | 5 | **N**: failed logins of one account in the window that raise an alarm | `--threshold` |
 | `[generator]` | `seed` | 42 | random seed; the same seed gives identical files | `--seed` |
-| | `n_users` | 10000 | number of accounts with traffic | `--users` |
+| | `n_users` | 10000 | number of accounts with traffic; keep about 100 events per user (10 M events → 100000) | `--users` |
 | | `n_events` | 1000000 | approximate number of normal events | `--events` |
 | | `start_ts` | 1767225600 | first timestamp (2026-01-01 00:00 UTC) | — |
 | | `duration_s` | 604800 | time span of the data (7 days) | — |
