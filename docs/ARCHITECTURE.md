@@ -28,7 +28,7 @@ Each requirement from `Opis_Tematu.docx` is listed with the place in the code th
 | Input: time, user, source address, result | `events.csv`, `common.load_dataset` | M0 ✅ |
 | Parameters: window length, threshold | `--window`, `--threshold` | M0 ✅ |
 | Output: alarms with a time range + per-account summary | `alarms.csv`, `summary.csv` | M0 ✅ |
-| Generator puts **labelled** attacks into normal traffic | `generator.py` → `ground_truth.csv` | M1 |
+| Generator puts **labelled** attacks into normal traffic | `generator.py` → `ground_truth.csv` | M1 ✅ |
 | Large data (millions of events) | NumPy arrays + compiled/parallel code; tested up to 10 M events | M2–M7 |
 | Correct at the edges of **windows** | half-open window (§2.2), edge-case tests | M0 ✅ |
 | Correct at the edges of **data chunks** | binary-search design (§6); OpenMP time split with halo (§7.1); test with an attack cut by a chunk border | M2–M3 |
@@ -134,7 +134,7 @@ Everything runs natively on Windows 11. Fallback for MPI: WSL2 with Ubuntu + Ope
 
 ```
 PRIR_Project/
-├── README.md                  what it is, setup, how to run
+├── README.md                  setup and configuration
 ├── pyproject.toml             makes src/ installable (pip install -e .) + pytest settings
 ├── requirements.txt           Python packages
 ├── demo.ps1                   runs everything for the presentation
@@ -142,13 +142,13 @@ PRIR_Project/
 ├── docs/                      documentation
 │   ├── ARCHITECTURE.md        this file
 │   ├── ROADMAP.md             plan, milestones, report outline
+│   ├── DEMO.md                step-by-step demonstration guide
 │   └── Opis_Tematu.docx       topic description
 │
 ├── config/
 │   └── default.toml           rule (W, N), generator and benchmark settings
 │
 ├── data/
-│   ├── README.md              what the datasets are
 │   ├── sample/                tiny hand-written dataset (in git)
 │   └── <generated>/           made by `generate` (not in git)
 │
@@ -167,8 +167,12 @@ PRIR_Project/
 │       └── opencl.py          OpenCL (PyOpenCL, GPU)
 │
 ├── tests/
-│   ├── test_rule.py           edge cases of the rule
+│   ├── conftest.py            shared test helper: random data with every edge case
+│   ├── test_rule.py           edge cases of the rule (run on reference AND core)
+│   ├── test_core.py           fast core: building blocks + core = reference
+│   ├── test_evaluate.py       precision / recall / delay on hand-made cases
 │   ├── test_cli.py            command line + config on data/sample
+│   ├── test_generator.py      generator: format, repeatability, scenarios behave as labelled
 │   └── test_backends.py       every backend = reference (incl. MPI via mpiexec)
 │
 └── results/                   outputs of runs (created automatically, not in git)
@@ -230,6 +234,21 @@ correct at the edges of data chunks.
 
 Alarm merging (step 5) runs **after** all counts are known, on data in the original order.
 So an attack that is cut by a chunk border is still one alarm.
+
+**Where each step is in the code** (`src/login_correlation/core.py`, milestone M2):
+
+| Step | Function | Notes |
+|---|---|---|
+| 1–2 | `sort_failures` | `np.lexsort` (stable) + `np.bincount` / `cumsum` for the user segments |
+| 3–4 | `window_counts` | Numba `@njit(parallel=True)`, `prange` over users, `lower_bound` per failure |
+| 5 | `find_episodes` → `alarms_frame` | Numba, one pass over the failures (O(F)) |
+| 6 | `build_summary` | Numba, one pass over all events + `np.bincount` |
+| all | `detect` | the whole pipeline; `warm_up()` compiles everything before timing |
+
+`core.detect` gives exactly the same output as `backends/reference.py`; this is tested on
+random data, on generated data and on every edge case.
+`common.normalize_alarms` / `normalize_summary` fix the columns, types and row order, so all
+backends write identical CSV files.
 
 ---
 
@@ -325,6 +344,9 @@ The list of alarms must be the same as in batch mode.
 
 ### 8.1 Generated scenarios
 Normal traffic: a few very active users and many quiet ones, random login times, and about 3 % typos (1–2 FAILs, then SUCCESS).
+Each scenario gets its own victim account, and the victim's normal traffic is removed for 2·W
+before and after it, so the label is always right. Scenarios that cannot exist when N = 1
+(`slow_brute`, `typo_burst`, both edge cases) are skipped in that case.
 
 | Scenario | What it is | Should alarm? |
 |---|---|---|
@@ -339,11 +361,33 @@ Normal traffic: a few very active users and many quiet ones, random login times,
 
 The same `--seed` always gives the same data.
 
-### 8.2 Metrics
-* An alarm **matches** a scenario if it is the same user and the time ranges overlap.
-* **Precision** = alarms that match an expected scenario / all alarms
-* **Recall** = expected scenarios that were found / all expected scenarios
-* Also: results per scenario type, and detection delay.
+User activity follows `1/rank^0.8` but is **capped at 20× the average user**. Without the cap
+the busiest account would get about 2 % of all logins (one every few seconds for a week),
+and its ordinary typos would look like attacks. Keep about 100 events per user
+(1 M events → 10 000 users, 10 M events → `--users 100000`).
+
+### 8.2 Metrics (`evaluate.py`)
+* An alarm **matches** a scenario if it is the same user and the time ranges overlap
+  (`alarm.start_ts ≤ scenario.end_ts` and `alarm.end_ts ≥ scenario.start_ts`).
+* **Precision** = alarms that match a scenario with `expected_alarm = True` / all alarms
+* **Recall** = scenarios with `expected_alarm = True` found by at least one alarm / all such scenarios
+* **F1** = 2 · P · R / (P + R)
+* **Detection delay** = first matching alarm's `trigger_ts` − scenario `start_ts`, in log
+  time (mean, median, max). It shows how many seconds of the attack pass before the rule
+  can fire.
+* **False positives** are split by cause: an alarm on a scenario labelled harmless
+  (`typo_burst`, `edge_exact_window`), which would mean a bug, or an alarm from normal
+  traffic (a user who made several typos close together).
+* Everything is also given **per scenario type**.
+
+Measured with seed 42, W = 60, N = 5:
+
+| Data | Alarms | Precision | Recall | F1 | Median delay |
+|---|---|---|---|---|---|
+| 1 M events, 10 k users | 63 | 1.00 | 0.863 | 0.93 | 14 s |
+| 10 M events, 100 k users | 64 | 0.98 | 0.863 | 0.92 | 15 s |
+
+All 10 missed scenarios are `slow_brute`, the attack type the rule is known not to catch.
 
 ### 8.3 Timing
 Every backend reports the same phases: `load`, `encode`, `prepare`, `compute`, `merge`,

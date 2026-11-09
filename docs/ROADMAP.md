@@ -8,19 +8,44 @@
 - [x] Edge-case tests (window edge, repeated timestamps, empty accounts, empty user field, merging)
 - [x] `python -m login_correlation check` reports OpenMP, MPI (MS-MPI) and OpenCL (Iris Xe) as working
 
-### M1: Data generator (`generator.py`)
+### M1: Data generator (`generator.py`) ✅
 
-- [ ] Normal traffic: active and quiet users, random times, typos
-- [ ] All scenarios from docs/ARCHITECTURE.md §8.1 (including the edge cases and `empty_username`), saved in `ground_truth.csv`
-- [ ] Accounts with no events written to `users.csv`
-- [ ] The same `--seed` gives the same files
+- [x] Normal traffic: active and quiet users, random times, typos
+- [x] All scenarios from docs/ARCHITECTURE.md §8.1 (including the edge cases and `empty_username`), saved in `ground_truth.csv`
+- [x] Accounts with no events written to `users.csv`
+- [x] The same `--seed` gives the same files
+- [x] Tests: `tests/test_generator.py` (20 tests: format, repeatability, every scenario behaves as labelled)
+- [x] Demonstration steps written in `docs/DEMO.md` §2–3
 - **Done when:** 10 M events are generated in under 2 min (1 M in under 30 s), and the reference finds every scenario that should alarm except `slow_brute`.
+- **Result (2026-11-09):** 1 M events in about 4 s; 10 M (with `--users 100000`) in about 1 min (400 MB).
+  All expected scenarios except `slow_brute` are found; no alarm for `typo_burst` or
+  `edge_exact_window`.
+- **Fix made during M2:** user activity is capped at 20× the average. Without the cap the busiest
+  account logged in every few seconds for a whole week, and its ordinary typos produced
+  hundreds of false alarms on 10 M events.
 
-### M2: Fast core + quality (`core.py`, `evaluate.evaluate`)
+### M2: Fast core + quality (`core.py`, `evaluate.py`) ✅
 
-- [ ] `window_counts` with `lower_bound`, `merge_episodes`, `build_summary`
-- [ ] `evaluate`: precision, recall, results per scenario type, detection delay
+- [x] `core.py`: `sort_failures`, `window_counts` (binary search, `prange`), `find_episodes`, `build_summary`, `detect`, `warm_up`
+- [x] `evaluate.py`: precision, recall, F1, results per scenario type, detection delay, false positives split by cause
+- [x] `python -m login_correlation evaluate` prints a readable report and saves `metrics.json`
+- [x] Faster encoding (`common.encode`): text → numbers on 10 M events went from 9.9 s to 5.5 s
+- [x] One output format for all backends: `common.normalize_*` also fixes the column types
+- [x] Tests: `tests/test_core.py` (core = reference on random and generated data, building blocks),
+  `tests/test_evaluate.py` (metrics on hand-made cases), and every edge-case test in
+  `tests/test_rule.py` now runs on both `reference` and `core`
+- [x] Demonstration step written in `docs/DEMO.md` §4
 - **Done when:** the core with 1 thread gives the same output as `reference`, and `python -m login_correlation evaluate` prints the metrics.
+- **Result (2026-11-09):** core output is identical to reference in every test.
+
+  | Data | core (prepare + compute + merge) | reference | Precision | Recall |
+  |---|---|---|---|---|
+  | 1 M events, 10 k users | 0.09 s | 1.6 s | 1.00 | 0.863 |
+  | 10 M events, 100 k users | 0.39 s | 16 s | 0.98 | 0.863 |
+
+  Recall is 0.863 because the 10 `slow_brute` attacks are missed, as designed (63 of 73 found).
+  On 10 M events, reading the CSV (about 5 s) and encoding (about 5.5 s) now take far longer
+  than the detection itself. This is the Amdahl's law point for the report.
 
 ### M3: OpenMP (`backends/openmp.py`)
 

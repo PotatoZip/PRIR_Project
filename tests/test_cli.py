@@ -1,4 +1,4 @@
-"""Command line and config file, run on data/sample (described in data/README.md)."""
+"""Command line and config file, run on data/sample (its accounts are described in docs/DEMO.md, step 3)."""
 
 from pathlib import Path
 

@@ -115,17 +115,26 @@ def make_alarm_id(user: str, start_ts: int) -> str:
     return f"{user}:{start_ts}"
 
 
+ALARM_DTYPES = {"alarm_id": object, "user": object, "start_ts": "int64",
+                "end_ts": "int64", "trigger_ts": "int64", "n_failures": "int64"}
+SUMMARY_DTYPES = {"user": object, "n_events": "int64", "n_fail": "int64", "n_success": "int64",
+                  "first_ts": "Int64", "last_ts": "Int64", "max_window_count": "int64",
+                  "n_alarms": "int64"}
+
+
 def normalize_alarms(df: pd.DataFrame) -> pd.DataFrame:
-    """Fixed column and row order, so the outputs of all backends can be compared byte for byte."""
+    """Fixed columns, types and row order, so the outputs of all backends are identical
+    (as DataFrames and as CSV files). Every backend must pass its alarms through this."""
     if df.empty:
-        return pd.DataFrame({c: pd.Series(dtype="object" if c in ("alarm_id", "user") else "int64")
-                             for c in ALARM_COLUMNS})
-    return df[ALARM_COLUMNS].sort_values(["user", "start_ts"], kind="stable").reset_index(drop=True)
+        return pd.DataFrame({c: pd.Series(dtype=t) for c, t in ALARM_DTYPES.items()})
+    out = df[ALARM_COLUMNS].astype(ALARM_DTYPES)
+    return out.sort_values(["user", "start_ts"], kind="stable").reset_index(drop=True)
 
 
 def normalize_summary(df: pd.DataFrame) -> pd.DataFrame:
-    out = df[SUMMARY_COLUMNS].sort_values("user", kind="stable").reset_index(drop=True)
-    return out.astype({"first_ts": "Int64", "last_ts": "Int64"})
+    """Same as normalize_alarms, for the per-account summary (sorted by user)."""
+    out = df[SUMMARY_COLUMNS].astype(SUMMARY_DTYPES)
+    return out.sort_values("user", kind="stable").reset_index(drop=True)
 
 
 # ----------------------------------------------------------------------------- timing
@@ -173,21 +182,38 @@ def encode(df: pd.DataFrame, registry: list[str] | None = None) -> EventArrays:
     User ids: registry accounts first (in registry order), then accounts that only appear
     in the events (in order of first appearance). Same input -> same ids.
     """
-    registry = list(registry or [])
-    seen = set(registry)
-    # An empty user field is a real case (a login attempt without a name). It is kept as
-    # its own account called EMPTY_USER instead of being dropped or crashing.
-    user_col = df["user"].astype(object).fillna("").str.strip().replace("", EMPTY_USER)
-    users = registry + [u for u in pd.unique(user_col) if u not in seen]
-    user_id = pd.Categorical(user_col, categories=users).codes.astype(np.int32)
-    ip_codes, ip_names = pd.factorize(df["src_ip"].astype(object))
+    # 1. factorize: every row gets the index of its name in `uniques` (first appearance
+    #    order). This is the only step that touches all rows, and it runs in C. A missing
+    #    value (empty CSV field) gets code -1.
+    codes, uniques = pd.factorize(df["user"], use_na_sentinel=True)
+
+    # 2. Build the final name list (registry first) and a small table that maps a
+    #    factorize code to a final id. This loop runs once per distinct name, not per row.
+    #    An empty user field is a real case (a login attempt without a name). It is kept as
+    #    its own account called EMPTY_USER instead of being dropped or crashing.
+    users = list(registry or [])
+    index = {name: i for i, name in enumerate(users)}
+
+    def id_of(name: str) -> int:
+        if name not in index:
+            index[name] = len(users)
+            users.append(name)
+        return index[name]
+
+    code_to_id = np.array([id_of(str(u).strip() or EMPTY_USER) for u in uniques] + [0],
+                          dtype=np.int32)
+    if (codes < 0).any():
+        code_to_id[-1] = id_of(EMPTY_USER)          # code -1 reads the last table entry
+    user_id = code_to_id[codes]
+
+    ip_codes, ip_names = pd.factorize(df["src_ip"], use_na_sentinel=False)
     return EventArrays(
         ts=df["ts"].to_numpy(dtype=np.int64),
         user_id=user_id,
         ip_id=ip_codes.astype(np.int32),
-        is_fail=(df["result"].astype(object).to_numpy() == FAIL).astype(np.uint8),
+        is_fail=(df["result"] == FAIL).to_numpy(dtype=bool, na_value=False).astype(np.uint8),
         users=users,
-        ips=list(ip_names),
+        ips=[str(ip) for ip in ip_names],
     )
 
 

@@ -11,27 +11,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-import numpy as np
 import pytest
+from conftest import random_events
 
 from login_correlation.__main__ import main
 from login_correlation.backends.reference import detect
-from login_correlation.common import EventArrays, RuleParams, get_backend
+from login_correlation.common import RuleParams, get_backend
 
 PROJECT = Path(__file__).resolve().parents[1]
 SAMPLE = PROJECT / "data" / "sample"
-
-
-def random_events(seed, n=5000, n_users=50):
-    """Random data with many repeated timestamps (1 hour), 5 empty accounts and an attack
-    in the middle of the hour, so that it crosses the border between time chunks."""
-    rng = np.random.default_rng(seed)
-    ts = rng.integers(0, 3600, n).tolist()
-    users = [f"user{u:03d}" for u in rng.integers(0, n_users, n)]
-    result = np.where(rng.random(n) < 0.4, "FAIL", "SUCCESS").tolist()
-    rows = list(zip(ts, users, ["10.0.0.1"] * n, result))
-    rows += [(1790 + k, "attacker", "203.0.113.66", "FAIL") for k in range(20)]   # 1790..1809
-    return EventArrays.from_rows(rows, [f"user{u:03d}" for u in range(n_users + 5)])
 
 
 BACKEND_VARIANTS = [
