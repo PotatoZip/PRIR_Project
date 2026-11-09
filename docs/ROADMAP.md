@@ -8,13 +8,19 @@
 - [x] Edge-case tests (window edge, repeated timestamps, empty accounts, empty user field, merging)
 - [x] `python -m login_correlation check` reports OpenMP, MPI (MS-MPI) and OpenCL (Iris Xe) as working
 
-### M1: Data generator (`generator.py`)
+### M1: Data generator (`generator.py`) ✅
 
-- [ ] Normal traffic: active and quiet users, random times, typos
-- [ ] All scenarios from docs/ARCHITECTURE.md §8.1 (including the edge cases and `empty_username`), saved in `ground_truth.csv`
-- [ ] Accounts with no events written to `users.csv`
-- [ ] The same `--seed` gives the same files
+- [x] Normal traffic: active and quiet users, random times, typos
+- [x] All scenarios from docs/ARCHITECTURE.md §8.1 (including the edge cases and `empty_username`), saved in `ground_truth.csv`
+- [x] Accounts with no events written to `users.csv`
+- [x] The same `--seed` gives the same files
+- [x] Tests: `tests/test_generator.py` (20 tests: format, repeatability, every scenario behaves as labelled)
+- [x] Demonstration steps written in `docs/DEMO.md` §2–3
 - **Done when:** 10 M events are generated in under 2 min (1 M in under 30 s), and the reference finds every scenario that should alarm except `slow_brute`.
+- **Result (2026-11-09):** 1 M events in 5.1 s; 10 M in 54 s (403 MB). On 1 M events the reference
+  raises 65 alarms. 63 match labelled attacks; all expected scenarios except `slow_brute` are
+  found; no alarm for `typo_burst` or `edge_exact_window`. 2 false positives come from very
+  active normal users.
 
 ### M2: Fast core + quality (`core.py`, `evaluate.evaluate`)
 

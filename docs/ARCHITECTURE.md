@@ -28,7 +28,7 @@ Each requirement from `Opis_Tematu.docx` is listed with the place in the code th
 | Input: time, user, source address, result | `events.csv`, `common.load_dataset` | M0 ✅ |
 | Parameters: window length, threshold | `--window`, `--threshold` | M0 ✅ |
 | Output: alarms with a time range + per-account summary | `alarms.csv`, `summary.csv` | M0 ✅ |
-| Generator puts **labelled** attacks into normal traffic | `generator.py` → `ground_truth.csv` | M1 |
+| Generator puts **labelled** attacks into normal traffic | `generator.py` → `ground_truth.csv` | M1 ✅ |
 | Large data (millions of events) | NumPy arrays + compiled/parallel code; tested up to 10 M events | M2–M7 |
 | Correct at the edges of **windows** | half-open window (§2.2), edge-case tests | M0 ✅ |
 | Correct at the edges of **data chunks** | binary-search design (§6); OpenMP time split with halo (§7.1); test with an attack cut by a chunk border | M2–M3 |
@@ -134,7 +134,7 @@ Everything runs natively on Windows 11. Fallback for MPI: WSL2 with Ubuntu + Ope
 
 ```
 PRIR_Project/
-├── README.md                  what it is, setup, how to run
+├── README.md                  setup and configuration
 ├── pyproject.toml             makes src/ installable (pip install -e .) + pytest settings
 ├── requirements.txt           Python packages
 ├── demo.ps1                   runs everything for the presentation
@@ -142,13 +142,13 @@ PRIR_Project/
 ├── docs/                      documentation
 │   ├── ARCHITECTURE.md        this file
 │   ├── ROADMAP.md             plan, milestones, report outline
+│   ├── DEMO.md                step-by-step demonstration guide
 │   └── Opis_Tematu.docx       topic description
 │
 ├── config/
 │   └── default.toml           rule (W, N), generator and benchmark settings
 │
 ├── data/
-│   ├── README.md              what the datasets are
 │   ├── sample/                tiny hand-written dataset (in git)
 │   └── <generated>/           made by `generate` (not in git)
 │
@@ -169,6 +169,7 @@ PRIR_Project/
 ├── tests/
 │   ├── test_rule.py           edge cases of the rule
 │   ├── test_cli.py            command line + config on data/sample
+│   ├── test_generator.py      generator: format, repeatability, scenarios behave as labelled
 │   └── test_backends.py       every backend = reference (incl. MPI via mpiexec)
 │
 └── results/                   outputs of runs (created automatically, not in git)
@@ -325,6 +326,9 @@ The list of alarms must be the same as in batch mode.
 
 ### 8.1 Generated scenarios
 Normal traffic: a few very active users and many quiet ones, random login times, and about 3 % typos (1–2 FAILs, then SUCCESS).
+Each scenario gets its own victim account, and the victim's normal traffic is removed for 2·W
+before and after it, so the label is always right. Scenarios that cannot exist when N = 1
+(`slow_brute`, `typo_burst`, both edge cases) are skipped in that case.
 
 | Scenario | What it is | Should alarm? |
 |---|---|---|
