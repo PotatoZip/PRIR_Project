@@ -29,3 +29,4 @@ repeats = 5
 sizes   = [100000, 1000000, 5000000, 10000000]
 threads = [1, 2, 4, 6, 8, 10, 12]
 ranks   = [1, 2, 4, 6, 8]
+mpi_repeats = 3        # MPI runs reload the CSV each time, so fewer repeats

@@ -34,7 +34,7 @@ Each requirement from `Opis_Tematu.docx` is listed with the place in the code th
 | Correct at the edges of **data chunks** | binary-search design (§6); OpenMP time split with halo (§7.1); test with an attack cut by a chunk border | M2–M3 |
 | **OpenMP**: split accounts **or** groups of ordered events between threads | `backends/openmp.py`: `--split users` and `--split time` | M3 |
 | OpenMP: with a time split, give access to the events needed by windows at the edge | halo = the previous W s read from shared memory (§7.1) | M3 |
-| **MPI**: split by rule key (account); every alarm has one owner | `backends/mpi.py`, `owner = crc32(user) % P` | M4 |
+| **MPI**: split by rule key (account); every alarm has one owner | `backends/mpi.py`, `owner = crc32(user) % P` | M4 ✅ |
 | **OpenCL**: encode text, then filter, sort and count on the GPU; show encoding cost separately | `backends/opencl.py`, timed per phase | M5 |
 | Report: events exactly on the window edge, empty accounts, repeated timestamps | tests in `tests/test_rule.py` + generator scenarios (§8.1) | M0 ✅, M1 |
 | Report: precision, recall, events/s, time-to-alarm in a replayed stream | `evaluate.py`, `bench.py` | M2, M6, M7 |
@@ -158,7 +158,7 @@ PRIR_Project/
 │   ├── generator.py           synthetic data with labelled attacks
 │   ├── core.py                fast shared algorithm (Numba)
 │   ├── evaluate.py            precision/recall + stream replay
-│   ├── bench.py               benchmarks + charts (OpenMP scaling done; rest in M7)
+│   ├── bench.py               benchmarks + charts (OpenMP and MPI done; rest in M7)
 │   ├── check_env.py           checks that OpenMP, MPI and OpenCL work
 │   └── backends/              the four versions of the detector
 │       ├── reference.py       plain Python = the correct answer
@@ -172,6 +172,7 @@ PRIR_Project/
 │   ├── test_core.py           fast core: building blocks + core = reference
 │   ├── test_evaluate.py       precision / recall / delay on hand-made cases
 │   ├── test_openmp.py         OpenMP building blocks, time split with halo, benchmark code
+│   ├── test_mpi.py            MPI: ownership, partition, simulated ranks, real mpiexec runs
 │   ├── test_cli.py            command line + config on data/sample
 │   ├── test_generator.py      generator: format, repeatability, scenarios behave as labelled
 │   └── test_backends.py       every backend = reference (incl. MPI via mpiexec)
@@ -312,7 +313,8 @@ time ─────────────────────────
 * Benchmark: `python -m login_correlation bench --data data\d10m` → `results/bench_openmp.csv`
   and `results/plots/speedup_openmp.png`.
 
-**Measured** (10 M events, 100 000 users, median of 5 runs, laptop on battery):
+**Measured** (10 M events, 100 000 users, median of 5 runs, laptop on battery; on the charger
+12 threads reach about 3.8–4.1×, but with noisy runs - repeat with background apps closed):
 
 | Threads | split by accounts | speed-up | split by time + halo | speed-up |
 |---|---|---|---|---|
@@ -333,7 +335,7 @@ Why the speed-up stays near 2–2.5× (good material for the report):
 * Variant B is slower overall because it must also sort the failures by time and sort each
   chunk locally; in exchange it shows correct results across chunk borders.
 
-### 7.2 MPI (`mpi.py`)
+### 7.2 MPI (`backends/mpi.py`) ✅
 ```mermaid
 sequenceDiagram
     participant R0 as rank 0
@@ -351,6 +353,40 @@ sequenceDiagram
   duplicates are possible.
 * `crc32` is used instead of Python's `hash()`, because `hash()` gives different values in different processes.
 * The phases scatter, compute and gather are timed with `MPI.Wtime()`.
+
+**Implementation** (`src/login_correlation/backends/mpi.py`):
+
+| Step | Where | How |
+|---|---|---|
+| partition | rank 0 | `owner_of` for every account; each account gets a local id inside its owner; a one-pass counting sort (Numba `_group_by_owner`) puts each rank's events into one block, keeping file order (needed for equal timestamps) |
+| scatter | all | `comm.scatter` of the account names (small, pickled), then `comm.Scatterv` of `ts` (int64), `user_id` (int32), `is_fail` (uint8) - NumPy buffers, no pickling |
+| compute | all | `core.detect` on the rank's own accounts - the same tested algorithm; one Numba thread per process by default (`--threads` for hybrid MPI + threads) |
+| gather | all → 0 | `comm.gather` of each rank's alarms and summary, then `merge()` = concatenate + normalize |
+
+`partition()` and `merge()` do not use MPI, so the tests can simulate any number of ranks in
+one process (partition → `core.detect` per part → merge must equal the reference) and also
+run the real program with `mpiexec`.
+
+**Measured** (10 M events, 100 000 users, median of 3 runs, on the charger):
+
+| Processes | partition | scatter | compute (slowest rank) | gather | whole detection | speed-up |
+|---|---|---|---|---|---|---|
+| 1 | 0.12 s | 0.06 s | 0.270 s | 0.06 s | 0.50 s | 1.00 |
+| 2 | 0.35 s | 0.09 s | 0.242 s | 0.09 s | 0.78 s | 0.64 |
+| 4 | 0.32 s | 0.07 s | 0.139 s | 0.09 s | 0.62 s | 0.80 |
+| 6 | 0.24 s | 0.06 s | 0.114 s | 0.11 s | 0.62 s | 0.81 |
+| 8 | 0.31 s | 0.07 s | 0.094 s | 0.12 s | 0.63 s | 0.79 |
+
+The local computation scales (0.27 s → 0.094 s, 2.9× on 8 processes), but the whole
+detection on **one laptop** does not get faster:
+* **Amdahl + communication:** rank 0 alone partitions, scatters and gathers (≈ 0.5 s), which is
+  more than the entire computation on one process. With MPI the data has to be *moved* to the
+  processes; with OpenMP the threads simply share it.
+* **Waiting processes are not idle:** partitioning on rank 0 takes 0.12 s alone but ~0.3 s while
+  other ranks wait in `Scatterv`. MS-MPI waits by polling, which most likely takes CPU time and
+  memory bandwidth from rank 0.
+* On a real cluster each node would read its own part of the input, so most of the
+  partition/scatter cost would disappear - the design itself (one owner per account) does not change.
 * It runs as several processes on the laptop (`mpiexec -n 4 …`). The same code would also run on a cluster.
 * *Optional extra (only if there is time):* time chunks with an overlap of W s. Rank r gets
   `(T_r − W, T_{r+1})` but only reports alarms that **start** in `[T_r, T_{r+1})`, so each

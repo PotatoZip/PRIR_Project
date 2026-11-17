@@ -30,6 +30,7 @@ BACKEND_VARIANTS = [
     ("openmp", {"split": "time", "threads": 1}),
     ("openmp", {"split": "time", "threads": 2}),    # chunk border near the attack
     ("openmp", {"split": "time", "threads": 7}),
+    ("mpi", {}),            # in this process = MPI with 1 rank; more ranks: tests/test_mpi.py
     ("opencl", {}),
 ]
 

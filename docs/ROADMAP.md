@@ -81,17 +81,52 @@
   building the output tables is sequential (Amdahl's law). The 2 P-cores + 8 E-cores also
   limit the gain after 4 threads. Detection takes 0.14 s, while reading and encoding the
   CSV take about 13 s, so the parallel part is already not the bottleneck.
+- **Re-measured on the charger (2026-11-17):** 12 threads take about 0.11–0.16 s, a speed-up of
+  about **3.8–4.1×** for both splits. The runs were noisy because Firefox, Teams and Edge were
+  busy in the background; for the report, close them and run `bench --what openmp` again.
 - **Lessons (four versions of the preparation step):** per-thread arrays were too big for the
   cache (slower with more threads); a full scatter was limited by memory speed; "owner
   computes" suffered from branch mispredictions; **radix partitioning** finally scaled.
   The details are in the `openmp.py` docstring, which is good material for the report.
 
-### M4: MPI (`backends/mpi.py`)
+### M4: MPI (`backends/mpi.py`) ✅
 
-- [ ] `owner = crc32(user) % P`, `Scatterv`, local computation, `gather` to rank 0
-- [ ] Time scatter, compute and gather separately
+- [x] `owner = crc32(user) % P` (the same in every process, unlike Python's `hash()`)
+- [x] Rank 0: `partition()` - one-pass counting sort (Numba) of the events into one block per
+  rank, keeping file order; then `Scatterv` of the NumPy arrays; each rank runs `core.detect`
+  on its own accounts; `gather` + `merge()` on rank 0
+- [x] Phases timed separately with `MPI.Wtime`: partition, scatter, compute (slowest rank),
+  gather; plus `local_min` / `local_max` (load balance) and events / accounts per rank
+- [x] `--threads` = Numba threads per process (default 1 = pure MPI)
+- [x] `python -m login_correlation bench --data data\d10m --what mpi` → `results/bench_mpi.csv`
+  + `results/plots/speedup_mpi.png`
+- [x] Tests: `tests/test_mpi.py` (42 tests: ownership, partition, simulated ranks = reference for
+  1–16 ranks, more ranks than accounts, real `mpiexec` runs with 2/3/5/8 processes on generated
+  data, other rule settings, only rank 0 writes, benchmark code) + `test_mpi_matches_reference`
+  (1–4 processes) and MPI in `tests/test_backends.py` - all pass (267 tests in total)
+- [x] Demonstration step written in `docs/DEMO.md` §6
 - [ ] _Optional (only if there is time):_ time chunks with overlap
 - **Done when:** the `test_mpi_matches_reference` test passes for 1–4 processes, and you have a scaling chart.
+- **Result (2026-11-17):** byte-identical CSV files on 1 M and 10 M events for 1, 2, 4 and 8
+  processes; precision and recall unchanged. 10 M events, median of 3 runs, on the charger:
+
+  | Processes | partition | scatter | compute (slowest rank) | gather | whole detection | speed-up |
+  |---|---|---|---|---|---|---|
+  | 1 | 0.12 s | 0.06 s | 0.270 s | 0.06 s | 0.50 s | 1.00 |
+  | 2 | 0.35 s | 0.09 s | 0.242 s | 0.09 s | 0.78 s | 0.64 |
+  | 4 | 0.32 s | 0.07 s | 0.139 s | 0.09 s | 0.62 s | 0.80 |
+  | 6 | 0.24 s | 0.06 s | 0.114 s | 0.11 s | 0.62 s | 0.81 |
+  | 8 | 0.31 s | 0.07 s | 0.094 s | 0.12 s | 0.63 s | 0.79 |
+
+  **The local computation scales (2.9× on 8 processes), but the whole detection does not get
+  faster on one laptop.** Rank 0 alone partitions the data, sends it and collects the results
+  (≈ 0.5 s), which is more than the whole computation on one process (0.27 s) - Amdahl's law
+  plus communication cost. Partitioning also gets slower when more processes run (0.12 s →
+  ~0.3 s), most likely because MS-MPI processes that wait for data keep polling and take CPU
+  time and memory bandwidth from rank 0. On a real cluster each node would read its own part
+  of the data, which removes most of this overhead. This is the main MPI lesson for the report.
+- **Fix made during M4:** partitioning first used `np.argsort` + three copies of 10 M-element
+  arrays (1.3 s on 8 ranks); a one-pass counting sort in Numba takes ~0.1–0.3 s.
 
 ### M5: OpenCL (`backends/opencl.py`)
 

@@ -96,6 +96,8 @@ def parse_args(argv):
 
     b = sub.add_parser("bench")
     b.add_argument("--data", required=True)
+    b.add_argument("--what", choices=["all", "openmp", "mpi"], default="all",
+                   help="which benchmark to run (default: all)")
     return p.parse_args(argv)
 
 
@@ -154,9 +156,10 @@ def run_detect(args, cfg) -> int:
             "window_s": params.window_s,
             "threshold": params.threshold,
             "n_events": len(events),
-            "threads": args.threads,
-            "split": args.split,
-            "device": args.device,
+            # options that only one backend uses are recorded only for that backend
+            "threads": args.threads if args.backend in ("openmp", "mpi") else None,
+            "split": args.split if args.backend == "openmp" else None,
+            "device": args.device if args.backend == "opencl" else None,
             **result.info,
         },
     )
@@ -223,7 +226,7 @@ def main(argv=None) -> int:
         if args.cmd == "bench":
             from login_correlation.bench import main as bench
 
-            return bench(args.data, cfg.get("bench", {}))
+            return bench(args.data, cfg.get("bench", {}), what=args.what)
     except NotImplementedError as exc:
         print(f"not implemented yet: {exc}", file=sys.stderr)
         return 2

@@ -17,9 +17,9 @@ All commands run in PowerShell, in the project folder, with the environment acti
 | 3 | Detection: reference | the alarm list and the per-account summary | ✅ |
 | 4 | Detection quality | precision and recall | ✅ M2 |
 | 5 | OpenMP | split by accounts and by time + halo, speed-up | ✅ M3 |
-| 6 | MPI | processes, one owner per alarm | ⬜ M4 |
+| 6 | MPI | processes, one owner per alarm | ✅ M4 |
 | 7 | OpenCL | GPU pipeline, encoding cost shown separately | ⬜ M5 |
-| 8 | Same results everywhere | every backend = reference | 🟡 OpenMP done; MPI, OpenCL to come |
+| 8 | Same results everywhere | every backend = reference | 🟡 OpenMP and MPI done; OpenCL to come |
 | 9 | Stream replay | time-to-alarm | ⬜ M6 |
 | 10 | Performance charts | events/s, speed-up | ⬜ M7 |
 
@@ -162,12 +162,13 @@ windows crossing a chunk border are counted correctly.
 python -m login_correlation bench --data data\d10m      # about 1 min; 5 runs per setting
 start results\plots\speedup_openmp.png
 ```
-Expected (10 M events; numbers vary between runs, and are better on the charger):
+Expected (10 M events; numbers vary between runs - plug in the charger and close
+browsers / Teams first):
 
 | Threads | split by accounts | split by time + halo |
 |---|---|---|
-| 1 | 0.29 s | 0.48 s |
-| 12 | 0.14 s (2.0×) | 0.20 s (2.4×) |
+| 12, on battery | 0.14 s (2.0×) | 0.20 s (2.4×) |
+| 12, on the charger | ≈ 0.12 s (≈ 3.8×) | ≈ 0.16 s (≈ 4×) |
 
 What to explain:
 * **Two ways to split the work**, as the task asks: by accounts (each thread gets whole
@@ -181,5 +182,40 @@ What to explain:
 * The design story (4 versions of the preparation step, see docs/ARCHITECTURE.md §7.1)
   shows why cache size and memory access patterns matter in parallel code.
 
-## 6–10. Coming with the next milestones ⬜
+## 6. MPI ✅
+
+Open a terminal that was started **after** MS-MPI was installed (otherwise `mpiexec` is not found).
+
+**a) Same result with real processes**
+```powershell
+mpiexec -n 4 python -m login_correlation detect --backend mpi --data data\demo --out results\demo_mpi4
+python -m login_correlation compare results\demo_ref results\demo_mpi4
+Get-Content results\demo_mpi4\timings.json
+```
+Expected: `IDENTICAL` twice, and a single `[mpi] ...` line (only process 0 prints and writes
+files). In `timings.json` point out:
+* `"ranks": 4`, `"events_per_rank"` (about 250 000 each) and `"accounts_per_rank"` (about 2 500
+  each): every account - and so every alarm - belongs to exactly one process;
+* the phases `partition`, `scatter`, `compute`, `gather`, and `local_min` / `local_max`
+  (how evenly the work was split).
+
+**b) Scaling** (about 5 minutes: every run reloads the 10 M-event CSV)
+```powershell
+python -m login_correlation bench --data data\d10m --what mpi
+start results\plots\speedup_mpi.png
+```
+Expected: the local computation gets faster with more processes (≈ 2.9× on 8), but the whole
+detection does not (≈ 0.5–0.8 s for every process count).
+
+What to explain:
+* **Partitioning by key:** `owner = crc32(user) % P`. All events of an account go to one process,
+  so no process needs another's data and no alarm can be reported twice. `crc32` is used
+  because Python's `hash()` gives different values in different processes.
+* **Why MPI is not faster here:** process 0 must split the data, send it and collect the
+  results (≈ 0.5 s), which costs more than the computation itself. MPI moves data between
+  processes; OpenMP threads just share it. On a cluster each node would read its own part.
+* The chart's left panel shows exactly this: the blue (compute) part shrinks, the grey
+  (partition) and green (gather) parts do not.
+
+## 7–10. Coming with the next milestones ⬜
 These sections are filled in as each milestone is finished (see [ROADMAP.md](ROADMAP.md)).
