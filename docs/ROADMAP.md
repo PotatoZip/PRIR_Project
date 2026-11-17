@@ -171,11 +171,41 @@
   shares memory with the CPU, so copies are cheap (40 ms for 90 MB); on a separate graphics
   card they would cost more.
 
-### M6: Stream replay (`evaluate.replay`)
+### M6: Stream replay (`stream.py`) ✅
 
-- [ ] Replay in time order with `--speedup`; queue of recent failures per user
-- [ ] Latency p50 / p95 / max; the alarms are the same as in batch mode
+- [x] `stream.replay`: events replayed in (time, file order) with `--speedup` (log seconds per
+  real second, `inf` = as fast as possible); a deque of the last W seconds of failures per
+  account; an alarm is raised the moment the N-th failure arrives; overlapping triggers
+  extend the open alarm, exactly as in batch mode
+- [x] Measured per alarm: processing latency (N-th failure arrives → alarm), time to alarm in
+  real time (first failure of the window arrives → alarm), detection delay in log time, and
+  the max lag (whether the detector keeps up); p50 / p95 / max
+- [x] `python -m login_correlation replay --data … --speedup … [--out …]` prints the report and
+  checks that the alarms equal batch detection (`same alarms as batch detection: YES`);
+  `--out` saves `alarms.csv`, `per_alarm.csv`, `replay.json`
+- [x] `compare` now also accepts a replay folder (it has no `summary.csv`, so only the alarms are compared)
+- [x] `python -m login_correlation bench --data data\demo --what stream` → `results/bench_stream.csv`
+  + `results/plots/stream_latency.png` (speed-ups from `[bench].stream_speedups`)
+- [x] Tests: `tests/test_stream.py` (38 tests: replay = batch on random data and 5 rule settings,
+  every edge case, file not in time order, alarm raised at the N-th failure, one raised alarm
+  per final alarm, paced replay follows the clock, invalid speed-up, command line, `compare`
+  with replay output, benchmark code)
+- [x] Demonstration step written in `docs/DEMO.md` §9
 - **Done when:** you have latency results for 3 speed-up values.
+- **Result (2026-11-17):** replayed alarms are identical to batch detection on 1 M and 10 M
+  events. 1 M events (63 alarms), Python loop, laptop on the charger:
+
+  | Replay speed-up | Replay took | Time to alarm (real) p50 / p95 / max | Processing p50 / max | Max lag |
+  |---|---|---|---|---|
+  | ∞ (as fast as possible) | 0.18 s | 0.007 / 0.017 / 0.021 ms | 1.1 / 6.9 µs | - |
+  | 100 000× | 6.0 s | 0.14 / 0.60 / 0.60 ms | 2.8 / 6.0 µs | 12 ms |
+  | 10 000× | 60.5 s | 1.4 / 5.9 / 5.9 ms | 3.8 / 10.6 µs | 18 ms |
+
+  The detector itself needs only microseconds per alarm; the real-time "time to alarm" is
+  the rule's detection delay (median 14 s, max 59 s of log time, because the N-th failure has
+  to arrive) divided by the speed-up. In real time (1×) an alarm comes about 14 s after the
+  attack starts, plus a few microseconds. Unpaced, the replay handles about 2-5 M events/s
+  (10 M events in 5.6 s), far more than any real login stream.
 
 ### M7: Benchmarks, report, presentation (`bench.py`)
 

@@ -20,7 +20,7 @@ All commands run in PowerShell, in the project folder, with the environment acti
 | 6 | MPI | processes, one owner per alarm | ✅ M4 |
 | 7 | OpenCL | GPU pipeline, encoding cost shown separately | ✅ M5 |
 | 8 | Same results everywhere | every backend = reference | ✅ (steps 5-7 each end with `compare`) |
-| 9 | Stream replay | time-to-alarm | ⬜ M6 |
+| 9 | Stream replay | time-to-alarm | ✅ M6 |
 | 10 | Performance charts | events/s, speed-up | ⬜ M7 |
 
 ---
@@ -252,5 +252,42 @@ What to explain:
 Each of steps 5-7 ends with `compare` against the reference, and `pytest` checks every backend
 on random data, generated data and all edge cases (309 tests, none skipped).
 
-## 9–10. Coming with the next milestones ⬜
+## 9. Stream replay and time-to-alarm ✅
+
+**a) Replay a week of logs in about a minute**
+```powershell
+python -m login_correlation replay --data data\demo --speedup 10000 --out results\demo_replay
+python -m login_correlation compare results\demo_ref results\demo_replay
+```
+Expected (about 60 s; `--speedup 100000` takes about 6 s if time is short):
+```
+replayed          1,001,504 events (604,799 s of log time) in 60.48 s, speed-up 10000x
+alarms            63
+processing        p50 0.004 ms, p95 0.010 ms, max 0.020 ms   (N-th failure arrives -> alarm)
+time to alarm     p50 1.405 ms, p95 5.908 ms, max 5.910 ms   (first failure in the window arrives -> alarm, real time)
+detection delay   p50 14 s, p95 59 s, max 59 s   (the same in log time)
+max lag           22.43 ms   (how late the slowest event was handled - small = the detector keeps up)
+same alarms as batch detection: YES
+```
+and `alarms.csv: IDENTICAL` from `compare` (the summary is skipped: replay writes alarms only).
+
+**b) The chart**
+```powershell
+python -m login_correlation bench --data data\demo --what stream     # about 70 s
+start results\plots\stream_latency.png
+```
+
+What to explain:
+* Batch detection reads the whole file; a real system sees logins **one by one**. The replay
+  feeds the events in time order, as if they arrived live, here 10 000× faster than real time.
+* For each account the program remembers only the failures from the last 60 seconds. When the
+  5th one arrives, the alarm is raised **at that moment** - and the alarms are exactly the same
+  as in batch mode.
+* **Processing** takes a few **microseconds**: the program reacts practically instantly.
+* **Time to alarm** is dominated by the rule itself: the 5th failure has to arrive first, which
+  takes a median of 14 s of log time. At 10 000× that is 1.4 ms of real time; in real time it
+  would be about 14 s.
+* **Max lag** of a few milliseconds means the detector keeps up with the stream even at 10 000×.
+
+## 10. Coming with the last milestone ⬜
 These sections are filled in as each milestone is finished (see [ROADMAP.md](ROADMAP.md)).

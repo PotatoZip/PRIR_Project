@@ -1,4 +1,4 @@
-"""Measuring the results: detection quality (milestone M2) and stream replay (TODO M6).
+"""Measuring the results: detection quality (milestone M2); stream replay is in stream.py (M6).
 
 Quality (docs/ARCHITECTURE.md section 8.2):
     an alarm MATCHES a scenario if it has the same user and the time ranges overlap:
@@ -13,7 +13,7 @@ Quality (docs/ARCHITECTURE.md section 8.2):
           (typo_burst, edge_exact_window), meaning the rule or the generator is wrong
         - "normal_traffic": the alarm hits no scenario at all (unlucky normal users)
 
-Stream replay (TODO M6):
+Stream replay (M6) - implemented in stream.py:
     replay events in (ts, file order) at `speedup` x real time (inf = as fast as possible);
     keep a deque of failure timestamps per user; when a new alarm opens, record
     processing latency = time of alarm - arrival time of the triggering event.
@@ -121,5 +121,7 @@ def format_report(m: dict) -> str:
 
 
 def replay(events: EventArrays, params: RuleParams, speedup: float = float("inf")) -> dict:
-    """Return {"alarms": DataFrame, "latency_s": {"p50", "p95", "max"}}. TODO(M6)."""
-    raise NotImplementedError("stream replay - milestone M6")
+    """Stream replay lives in stream.py (milestone M6); kept here for older imports."""
+    from login_correlation.stream import replay as _replay
+
+    return _replay(events, params, speedup)

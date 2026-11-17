@@ -30,3 +30,4 @@ sizes   = [100000, 1000000, 5000000, 10000000]
 threads = [1, 2, 4, 6, 8, 10, 12]
 ranks   = [1, 2, 4, 6, 8]
 mpi_repeats = 3        # MPI runs reload the CSV each time, so fewer repeats
+stream_speedups = [inf, 100000, 10000]   # replay speeds (log seconds per real second); inf = as fast as possible
