@@ -128,11 +128,48 @@
 - **Fix made during M4:** partitioning first used `np.argsort` + three copies of 10 M-element
   arrays (1.3 s on 8 ranks); a one-pass counting sort in Numba takes ~0.1–0.3 s.
 
-### M5: OpenCL (`backends/opencl.py`)
+### M5: OpenCL (`backends/opencl.py`) ✅
 
-- [ ] Copy to the GPU, `copy_if`, `RadixSort` on the combined key, window-count kernel, per-user counts
-- [ ] Time every phase (OpenCL profiling events), with encoding timed separately
+- [x] Device choice: `--device P:D` or `PYOPENCL_CTX`; default = first GPU of a native platform
+  (Microsoft's `OpenCLOn12` layer is skipped)
+- [x] Copy to the GPU, key `user << 32 | ts_rel` (ElementwiseKernel), `copy_if` filter, `RadixSort`
+  (only the used key bits: 49 for 100 000 users), `window_count` kernel (binary search per
+  failure + `atomic_max` per user), `user_stats` kernel (`atomic_inc` / `atomic_min` / `atomic_max`)
+- [x] Every phase timed separately (wall clock after `queue.finish()`); encoding text → numbers is
+  measured on its own by the command line; kernel build + first run reported as `compile`
+- [x] Alarms built on the CPU with the same `core.find_episodes` as every other backend
+- [x] `python -m login_correlation bench --data data\d10m --what opencl` → `results/bench_opencl.csv`
+  + `results/plots/opencl_phases.png`
+- [x] New dependency: `mako` (PyOpenCL needs it for `RadixSort` / `copy_if`), added to `requirements.txt`
+- [x] Tests: `tests/test_opencl.py` (33 tests: device choice, each GPU kernel against the CPU code,
+  GPU radix sort against numpy, whole backend = reference on random data and 5 rule settings,
+  window edges, equal timestamps, empty user field, no failures, no events, real epoch
+  timestamps, too long time span, phase timings, command line, benchmark code) + OpenCL in
+  `tests/test_backends.py`. **All 309 tests pass; nothing is skipped any more.**
+- [x] Demonstration step written in `docs/DEMO.md` §7
 - **Done when:** the output equals `reference`, and you have a phase-breakdown chart.
+- **Result (2026-11-17):** byte-identical CSV files on 1 M and 10 M events; precision and
+  recall unchanged. 10 M events (432 336 failures), Intel Iris Xe, median of 5 runs, on the
+  charger (noisy: browsers and Teams were running):
+
+  | Phase | Where | Median time |
+  |---|---|---|
+  | load CSV | CPU | 4.4 s |
+  | **encode** (text → numbers) | CPU | **6.4 s** |
+  | gpu_prepare (ts → uint32 offset) | CPU | 111 ms |
+  | copy to GPU (h2d) | | 40 ms |
+  | filter (`copy_if`) | GPU | 68 ms |
+  | radix sort | GPU | 120 ms |
+  | window count | GPU | 4.5 ms |
+  | per-user stats (atomics) | GPU | 16 ms |
+  | copy back (d2h) | | 17 ms |
+  | alarms + tables (merge) | CPU | 92 ms |
+  | **whole GPU pipeline** | | **0.44 s** (0.22 s in a quieter run) |
+
+  **Encoding the text costs about 15-30× more than the whole GPU pipeline**, and the window
+  count itself takes only a few milliseconds. Sorting is the biggest GPU phase. The Iris Xe
+  shares memory with the CPU, so copies are cheap (40 ms for 90 MB); on a separate graphics
+  card they would cost more.
 
 ### M6: Stream replay (`evaluate.replay`)
 

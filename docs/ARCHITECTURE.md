@@ -35,7 +35,7 @@ Each requirement from `Opis_Tematu.docx` is listed with the place in the code th
 | **OpenMP**: split accounts **or** groups of ordered events between threads | `backends/openmp.py`: `--split users` and `--split time` | M3 |
 | OpenMP: with a time split, give access to the events needed by windows at the edge | halo = the previous W s read from shared memory (§7.1) | M3 |
 | **MPI**: split by rule key (account); every alarm has one owner | `backends/mpi.py`, `owner = crc32(user) % P` | M4 ✅ |
-| **OpenCL**: encode text, then filter, sort and count on the GPU; show encoding cost separately | `backends/opencl.py`, timed per phase | M5 |
+| **OpenCL**: encode text, then filter, sort and count on the GPU; show encoding cost separately | `backends/opencl.py`, timed per phase | M5 ✅ |
 | Report: events exactly on the window edge, empty accounts, repeated timestamps | tests in `tests/test_rule.py` + generator scenarios (§8.1) | M0 ✅, M1 |
 | Report: precision, recall, events/s, time-to-alarm in a replayed stream | `evaluate.py`, `bench.py` | M2, M6, M7 |
 | One rule, one kind of key | rule = brute force, key = `user` | — |
@@ -158,7 +158,7 @@ PRIR_Project/
 │   ├── generator.py           synthetic data with labelled attacks
 │   ├── core.py                fast shared algorithm (Numba)
 │   ├── evaluate.py            precision/recall + stream replay
-│   ├── bench.py               benchmarks + charts (OpenMP and MPI done; rest in M7)
+│   ├── bench.py               benchmarks + charts (OpenMP, MPI, OpenCL done; data sizes in M7)
 │   ├── check_env.py           checks that OpenMP, MPI and OpenCL work
 │   └── backends/              the four versions of the detector
 │       ├── reference.py       plain Python = the correct answer
@@ -173,6 +173,7 @@ PRIR_Project/
 │   ├── test_evaluate.py       precision / recall / delay on hand-made cases
 │   ├── test_openmp.py         OpenMP building blocks, time split with halo, benchmark code
 │   ├── test_mpi.py            MPI: ownership, partition, simulated ranks, real mpiexec runs
+│   ├── test_opencl.py         OpenCL: device choice, each GPU kernel vs CPU, edge cases
 │   ├── test_cli.py            command line + config on data/sample
 │   ├── test_generator.py      generator: format, repeatability, scenarios behave as labelled
 │   └── test_backends.py       every backend = reference (incl. MPI via mpiexec)
@@ -393,23 +394,54 @@ detection on **one laptop** does not get faster:
   alarm still has one owner. An alarm that continues into the next chunk needs one extra
   message from rank r+1 back to rank r.
 
-### 7.3 OpenCL (`backends/opencl.py`)
-| # | Phase | Where | How |
+### 7.3 OpenCL (`backends/opencl.py`) ✅
+| # | Phase (timing key) | Where | How |
 |---|---|---|---|
-| 1 | encode | CPU | text → numbers; `ts` → offset from the first event (uint32) |
-| 2 | copy to GPU | | `pyopencl.array.to_device` |
-| 3 | filter | GPU | `copy_if(is_fail == 1)` |
-| 4 | sort | GPU | `RadixSort` on one 64-bit key `user_id << 32 \| ts` |
-| 5 | count | GPU | own kernel: each work-item does the binary search |
-| 6 | per-user counts | GPU | `atomic_inc` |
-| 7 | copy back | | `.get()` |
-| 8 | merge | CPU | `core.merge_episodes` (the output is small) |
+| 1 | `encode` | CPU | text → numbers (`common.encode`, measured by the command line) |
+| 2 | `gpu_prepare` | CPU | `ts` → `ts_rel` = uint32 offset from the first event |
+| 3 | `h2d` | | `pyopencl.array.to_device` of `ts_rel`, `user_id`, `is_fail` |
+| 4 | `filter` | GPU | ElementwiseKernel builds `key = user_id << 32 \| ts_rel`, then `copy_if(is_fail != 0)` keeps the failures' keys |
+| 5 | `sort` | GPU | `pyopencl.algorithm.RadixSort` on the 64-bit keys, only the bits in use (`32 + bits(users)`) |
+| 6 | `count` | GPU | own kernel `window_count`: one work-item per failure, binary search for `key − W + 1`; `atomic_max` gives `max_window_count` per user |
+| 7 | `stats` | GPU | own kernel `user_stats`: one work-item per event, `atomic_inc` / `atomic_min` / `atomic_max` → `n_events`, `n_fail`, `first_ts`, `last_ts` |
+| 8 | `d2h` | | `.get()` of the sorted keys, `j`, `count` and the per-user arrays |
+| 9 | `merge` | CPU | `core.find_episodes` + output tables, the same code as every backend |
 
 * The combined key means a single sort replaces "sort by user, then by time". The binary
   search for `key − W + 1` can never reach another user's events.
 * Each phase is timed separately, as the task asks. The Iris Xe shares RAM with the CPU,
   so copies are cheap; mention this in the report.
 * Use device `0:0` (native Intel driver), not `OpenCLOn12`, which is a slower translation layer.
+  `choose_device` skips `OpenCLOn12` by default; `--device P:D` or `PYOPENCL_CTX` override it.
+* Kernels and the radix sorter are built once per device and cached; that time (and the first
+  run, which builds the sort kernels for these types) is reported as `compile`.
+* Only the alarm merging runs on the CPU: it is a short sequential pass per user over the
+  (small) list of failures, and it reuses the tested `core.find_episodes`.
+
+**Measured** (10 M events, 432 336 failures, Intel Iris Xe, median of 5 runs, on the charger,
+noisy because other applications were running):
+
+| Phase | Where | Median time |
+|---|---|---|
+| load CSV | CPU | 4.4 s |
+| **encode** (text → numbers) | CPU | **6.4 s** |
+| gpu_prepare (ts → uint32 offset) | CPU | 111 ms |
+| copy to GPU (h2d) | | 40 ms |
+| filter (`copy_if`) | GPU | 68 ms |
+| radix sort | GPU | 120 ms |
+| window count | GPU | 4.5 ms |
+| per-user stats (atomics) | GPU | 16 ms |
+| copy back (d2h) | | 17 ms |
+| alarms + tables (merge) | CPU | 92 ms |
+| **whole GPU pipeline** | | **0.44 s** (0.22 s in a quieter run) |
+
+What this shows for the report:
+* **Encoding is the expensive part.** Turning the text columns into numbers costs about
+  15-30× more than the whole GPU pipeline - exactly the cost the task asks to show separately.
+* On the GPU, **sorting** is the largest phase; the window count itself takes a few
+  milliseconds because every failure is one independent work-item.
+* The Iris Xe shares memory with the CPU, so copies are cheap (about 40 ms for 90 MB); a
+  separate graphics card would need the PCIe bus and copies would cost more.
 
 ### 7.4 Stream replay (`evaluate.replay`)
 Events are fed one by one in time order, optionally faster than real time (`--speedup`).

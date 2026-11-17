@@ -18,8 +18,8 @@ All commands run in PowerShell, in the project folder, with the environment acti
 | 4 | Detection quality | precision and recall | ✅ M2 |
 | 5 | OpenMP | split by accounts and by time + halo, speed-up | ✅ M3 |
 | 6 | MPI | processes, one owner per alarm | ✅ M4 |
-| 7 | OpenCL | GPU pipeline, encoding cost shown separately | ⬜ M5 |
-| 8 | Same results everywhere | every backend = reference | 🟡 OpenMP and MPI done; OpenCL to come |
+| 7 | OpenCL | GPU pipeline, encoding cost shown separately | ✅ M5 |
+| 8 | Same results everywhere | every backend = reference | ✅ (steps 5-7 each end with `compare`) |
 | 9 | Stream replay | time-to-alarm | ⬜ M6 |
 | 10 | Performance charts | events/s, speed-up | ⬜ M7 |
 
@@ -217,5 +217,40 @@ What to explain:
 * The chart's left panel shows exactly this: the blue (compute) part shrinks, the grey
   (partition) and green (gather) parts do not.
 
-## 7–10. Coming with the next milestones ⬜
+## 7. OpenCL (GPU) ✅
+
+**a) Same result on the graphics card**
+```powershell
+python -m login_correlation detect --backend opencl --device 0:0 --data data\demo --out results\demo_gpu
+python -m login_correlation compare results\demo_ref results\demo_gpu
+Get-Content results\demo_gpu\timings.json
+```
+Expected: `IDENTICAL` twice. In `timings.json` point out `"device": "Intel(R) Iris(R) Xe Graphics"`,
+`"failures"` and one time per phase: `gpu_prepare`, `h2d`, `filter`, `sort`, `count`, `stats`,
+`d2h`, `merge`, plus `encode` at the top (text → numbers, done before the GPU part).
+
+**b) Where the time goes** (about 1 minute)
+```powershell
+python -m login_correlation bench --data data\d10m --what opencl
+start results\plots\opencl_phases.png
+```
+Expected (10 M events): load ≈ 4-8 s, **encode ≈ 6-12 s**, the whole GPU pipeline ≈ 0.2-0.45 s,
+of which the window count is only ≈ 3-5 ms.
+
+What to explain:
+* The task's pipeline step by step: **encode** the text fields (user name → number), then on
+  the GPU **filter** the failures (`copy_if`), **sort** them (radix sort on one 64-bit key
+  `user << 32 | time`, which is the same as sorting by user and then by time) and **count**
+  (one GPU thread per failure looks back with a binary search; per-user counts use atomic
+  operations).
+* **Encoding is the expensive part** - many times slower than everything the GPU does. That
+  is why the task asks to show it separately.
+* The laptop's GPU shares memory with the CPU, so copying data to it is cheap; on a separate
+  graphics card the copies would matter more.
+
+## 8. Same results everywhere ✅
+Each of steps 5-7 ends with `compare` against the reference, and `pytest` checks every backend
+on random data, generated data and all edge cases (309 tests, none skipped).
+
+## 9–10. Coming with the next milestones ⬜
 These sections are filled in as each milestone is finished (see [ROADMAP.md](ROADMAP.md)).
