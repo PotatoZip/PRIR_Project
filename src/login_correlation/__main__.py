@@ -87,7 +87,11 @@ def parse_args(argv):
 
     r = sub.add_parser("replay")
     r.add_argument("--data", required=True)
-    r.add_argument("--speedup", type=float, default=float("inf"))
+    r.add_argument("--speedup", type=float, default=float("inf"),
+                   help="seconds of log time per second of real time (default inf = as fast as possible)")
+    r.add_argument("--out", help="folder for alarms.csv, per_alarm.csv and replay.json (optional)")
+    r.add_argument("--no-check", action="store_true",
+                   help="do not compare the replayed alarms with batch detection")
     rule_args(r)
 
     c = sub.add_parser("compare")
@@ -96,7 +100,7 @@ def parse_args(argv):
 
     b = sub.add_parser("bench")
     b.add_argument("--data", required=True)
-    b.add_argument("--what", choices=["all", "openmp", "mpi", "opencl"], default="all",
+    b.add_argument("--what", choices=["all", "openmp", "mpi", "opencl", "stream"], default="all",
                    help="which benchmark to run (default: all)")
     return p.parse_args(argv)
 
@@ -173,10 +177,41 @@ def run_detect(args, cfg) -> int:
     return 0
 
 
+def run_replay(args, cfg) -> int:
+    """Replay the dataset as a live stream (stream.py) and report time-to-alarm."""
+    from login_correlation import core
+    from login_correlation.stream import format_report, replay
+
+    params = rule_params(args, cfg)
+    df, registry = load_dataset(args.data)
+    events = encode(df, registry)
+    res = replay(events, params, args.speedup)
+    identical = None
+    if not args.no_check:  # the fast batch core, which is tested to equal the reference
+        identical = bool(res["alarms"].equals(core.detect(events, params).alarms))
+    print(format_report(res["stats"], identical))
+    if args.out:
+        out = Path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+        res["alarms"].to_csv(out / "alarms.csv", index=False)
+        res["per_alarm"].to_csv(out / "per_alarm.csv", index=False)
+        (out / "replay.json").write_text(json.dumps(
+            {**res["stats"], "window_s": params.window_s, "threshold": params.threshold,
+             "same_as_batch": identical}, indent=2), encoding="utf-8")
+        print(f"(results saved to {out})")
+    return 0 if identical in (None, True) else 1
+
+
 def run_compare(args) -> int:
+    """Byte-for-byte comparison of two result folders. alarms.csv must be in both; summary.csv
+    is skipped when one folder has none (e.g. `replay` writes alarms only)."""
     ok = True
     for name in ("alarms.csv", "summary.csv"):
-        same = (Path(args.a) / name).read_bytes() == (Path(args.b) / name).read_bytes()
+        a, b = Path(args.a) / name, Path(args.b) / name
+        if name == "summary.csv" and not (a.exists() and b.exists()):
+            print(f"{name}: skipped (not in both folders)")
+            continue
+        same = a.read_bytes() == b.read_bytes()
         ok &= same
         print(f"{name}: {'IDENTICAL' if same else 'DIFFERENT'}")
     return 0 if ok else 1
@@ -215,12 +250,7 @@ def main(argv=None) -> int:
             print(f"\n(full metrics saved to {Path(args.results) / 'metrics.json'})")
             return 0
         if args.cmd == "replay":
-            from login_correlation.evaluate import replay
-
-            df, registry = load_dataset(args.data)
-            res = replay(encode(df, registry), rule_params(args, cfg), args.speedup)
-            print(json.dumps(res["latency_s"], indent=2))
-            return 0
+            return run_replay(args, cfg)
         if args.cmd == "compare":
             return run_compare(args)
         if args.cmd == "bench":

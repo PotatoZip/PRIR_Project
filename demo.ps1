@@ -24,5 +24,6 @@ foreach ($b in "openmp", "openmp_time", "mpi", "opencl") {
 }
 
 Step "7. Precision / recall";          python -m login_correlation evaluate --data $data --results "$res\reference"
-Step "8. Time-to-alarm";               python -m login_correlation replay --data $data --speedup 1000 @rule
+# 100000x replays the generated week of logs in about 6 s (1000x would take about 10 minutes)
+Step "8. Time-to-alarm";               python -m login_correlation replay --data $data --speedup 100000 @rule
 Write-Host "`nDone. Results in $res" -ForegroundColor Green

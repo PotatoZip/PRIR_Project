@@ -2,8 +2,8 @@
 
 Run:  python -m login_correlation bench --data data\\d10m
 
-Done so far (M3-M5): OpenMP and MPI scaling, OpenCL phase breakdown.
-Choose with --what all|openmp|mpi|opencl.
+Done so far (M3-M6): OpenMP and MPI scaling, OpenCL phase breakdown, stream latency.
+Choose with --what all|openmp|mpi|opencl|stream.
 
 OpenMP
     threads from config [bench].threads, both splits, each setting repeated [bench].repeats
@@ -21,6 +21,10 @@ MPI (M4)
 OpenCL (M5)
     load and encode measured once, the GPU pipeline [bench].repeats times; every phase timed
     -> results\\bench_opencl.csv, results\\plots\\opencl_phases.png
+
+Stream (M6)
+    replay at each [bench].stream_speedups value (inf, 100000x, 10000x)
+    -> results\\bench_stream.csv, results\\plots\\stream_latency.png
 
 Still to do (M7, docs/ARCHITECTURE.md section 8.4):
     all     sizes 0.1M, 1M, 5M, 10M  -> events/s
@@ -254,8 +258,68 @@ def plot_opencl(runs: pd.DataFrame, out_png: str | Path) -> None:
     plt.close(fig)
 
 
+def stream_latency(data_dir: str | Path, speedups: list[float], rule: RuleParams = RuleParams()) -> pd.DataFrame:
+    """Replay the dataset once per speed-up (stream.py) and keep the time-to-alarm statistics.
+    One row per speed-up. A week of logs takes about 60 s at 10000x and 6 s at 100000x."""
+    import math
+
+    from login_correlation.stream import replay
+
+    df, registry = load_dataset(data_dir)
+    events = encode(df, registry)
+    rows = []
+    for sp in speedups:
+        sp = math.inf if sp in (0, "inf") or sp == math.inf else float(sp)
+        s = replay(events, rule, sp)["stats"]
+        rows.append({
+            "speedup": "inf" if math.isinf(sp) else f"{sp:g}x", "n_events": s["events"],
+            "alarms": s["alarms"], "wall_s": s["wall_s"], "max_lag_ms": s["max_lag_ms"],
+            **{f"processing_{k}_ms": v for k, v in s["processing_latency_ms"].items()},
+            **{f"time_to_alarm_{k}_ms": (v * 1000 if v is not None else None)
+               for k, v in s["time_to_alarm_s"].items()},
+            **{f"delay_{k}_s": v for k, v in s["detection_delay_s"].items()},
+        })
+        print(f"  replay speed-up {rows[-1]['speedup']:>8}: {s['wall_s']:.1f} s, time to alarm p50 "
+              f"{rows[-1]['time_to_alarm_p50_ms']:.3f} ms, processing p50 {rows[-1]['processing_p50_ms']:.4f} ms")
+    return pd.DataFrame(rows)
+
+
+def plot_stream(summary: pd.DataFrame, out_png: str | Path) -> None:
+    """Left: time to alarm in real time (p50 / p95 / max) for each replay speed.
+    Right: processing latency - from the N-th failure to the alarm."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    fig, ax = plt.subplots(1, 2, figsize=(13, 4.5))
+    x = np.arange(len(summary))
+    for k, (stat, color) in enumerate((("p50", "tab:blue"), ("p95", "tab:orange"), ("max", "tab:red"))):
+        ax[0].bar(x + (k - 1) * 0.25, summary[f"time_to_alarm_{stat}_ms"], 0.25, color=color, label=stat)
+        ax[1].bar(x + (k - 1) * 0.25, summary[f"processing_{stat}_ms"] * 1000, 0.25, color=color, label=stat)
+    labels = [f"{sp}\n({w:.1f} s)" for sp, w in zip(summary["speedup"], summary["wall_s"])]
+    for a in ax:
+        a.set_xticks(x, labels)
+        a.set_yscale("log")
+        a.grid(alpha=0.3, axis="y")
+        a.legend()
+    ax[0].set(title="Time to alarm, real time\n(first failure of the attack arrives -> alarm)",
+              xlabel="replay speed-up (wall time of the replay)", ylabel="milliseconds (log scale)")
+    ax[1].set(title="Processing latency\n(N-th failure arrives -> alarm)",
+              xlabel="replay speed-up (wall time of the replay)", ylabel="microseconds (log scale)")
+    n = int(summary["n_events"].iloc[0])
+    d = summary.iloc[0]
+    fig.suptitle(f"Stream replay - {n:,} events, {int(d['alarms'])} alarms; detection delay in log time: "
+                 f"median {d['delay_p50_s']:.0f} s, max {d['delay_max_s']:.0f} s")
+    fig.tight_layout()
+    Path(out_png).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_png, dpi=150)
+    plt.close(fig)
+
+
 def main(data_dir: str, settings: dict, out_dir: str = "results", what: str = "all") -> int:
-    """settings = the [bench] section of config/default.toml. what = all | openmp | mpi | opencl."""
+    """settings = the [bench] section of config/default.toml. what = all | openmp | mpi | opencl | stream."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     repeats = int(settings.get("repeats", 5))
@@ -293,6 +357,17 @@ def main(data_dir: str, settings: dict, out_dir: str = "results", what: str = "a
         for ph in ("load", "encode", *GPU_PHASES, "gpu_total"):
             print(f"  {ph:<12} {med[ph] * 1000:10.1f} ms")
         print(f"runs: {out / 'bench_opencl.csv'}   chart: {out / 'plots' / 'opencl_phases.png'}")
+
+    if what in ("all", "stream"):
+        speedups = settings.get("stream_speedups", [float("inf"), 100000, 10000])
+        print(f"Stream replay on {data_dir} (speed-ups {speedups}; 10000x replays a week in ~1 min)")
+        summary = stream_latency(data_dir, speedups)
+        summary.to_csv(out / "bench_stream.csv", index=False)
+        plot_stream(summary, out / "plots" / "stream_latency.png")
+        cols = ["speedup", "wall_s", "time_to_alarm_p50_ms", "time_to_alarm_p95_ms",
+                "time_to_alarm_max_ms", "processing_p50_ms", "processing_max_ms", "max_lag_ms"]
+        print(summary[cols].round(4).to_string(index=False))
+        print(f"runs: {out / 'bench_stream.csv'}   chart: {out / 'plots' / 'stream_latency.png'}")
 
     print("(the data-size experiment follows in milestone M7)")
     return 0

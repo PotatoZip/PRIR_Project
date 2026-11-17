@@ -37,7 +37,7 @@ Each requirement from `Opis_Tematu.docx` is listed with the place in the code th
 | **MPI**: split by rule key (account); every alarm has one owner | `backends/mpi.py`, `owner = crc32(user) % P` | M4 ✅ |
 | **OpenCL**: encode text, then filter, sort and count on the GPU; show encoding cost separately | `backends/opencl.py`, timed per phase | M5 ✅ |
 | Report: events exactly on the window edge, empty accounts, repeated timestamps | tests in `tests/test_rule.py` + generator scenarios (§8.1) | M0 ✅, M1 |
-| Report: precision, recall, events/s, time-to-alarm in a replayed stream | `evaluate.py`, `bench.py` | M2, M6, M7 |
+| Report: precision, recall, events/s, time-to-alarm in a replayed stream | `evaluate.py`, `stream.py`, `bench.py` | M2 ✅, M6 ✅, M7 |
 | One rule, one kind of key | rule = brute force, key = `user` | — |
 
 The task gives a choice for both OpenMP ("accounts **or** groups of ordered events") and MPI
@@ -157,8 +157,9 @@ PRIR_Project/
 │   ├── common.py              settings, data model, CSV input/output, timer
 │   ├── generator.py           synthetic data with labelled attacks
 │   ├── core.py                fast shared algorithm (Numba)
-│   ├── evaluate.py            precision/recall + stream replay
-│   ├── bench.py               benchmarks + charts (OpenMP, MPI, OpenCL done; data sizes in M7)
+│   ├── evaluate.py            precision / recall / detection delay
+│   ├── stream.py              stream replay, time-to-alarm
+│   ├── bench.py               benchmarks + charts (OpenMP, MPI, OpenCL, stream done; data sizes in M7)
 │   ├── check_env.py           checks that OpenMP, MPI and OpenCL work
 │   └── backends/              the four versions of the detector
 │       ├── reference.py       plain Python = the correct answer
@@ -174,6 +175,7 @@ PRIR_Project/
 │   ├── test_openmp.py         OpenMP building blocks, time split with halo, benchmark code
 │   ├── test_mpi.py            MPI: ownership, partition, simulated ranks, real mpiexec runs
 │   ├── test_opencl.py         OpenCL: device choice, each GPU kernel vs CPU, edge cases
+│   ├── test_stream.py         stream replay = batch, edge cases, timing, command line
 │   ├── test_cli.py            command line + config on data/sample
 │   ├── test_generator.py      generator: format, repeatability, scenarios behave as labelled
 │   └── test_backends.py       every backend = reference (incl. MPI via mpiexec)
@@ -443,13 +445,38 @@ What this shows for the report:
 * The Iris Xe shares memory with the CPU, so copies are cheap (about 40 ms for 90 MB); a
   separate graphics card would need the PCIe bus and copies would cost more.
 
-### 7.4 Stream replay (`evaluate.replay`)
-Events are fed one by one in time order, optionally faster than real time (`--speedup`).
-A per-user queue of recent failures applies the same rule. The program measures:
-* **processing latency**: the time from the event's arrival until the alarm;
-* **detection delay**: `trigger_ts − attack start`.
+### 7.4 Stream replay (`stream.py`) ✅
+Batch mode reads the whole file and reports at the end; a real system sees events one by one.
+`replay` feeds the events in (time, file order), each at its scheduled moment
+`start + (ts − ts₀) / speedup` (`--speedup inf` = no waiting). For every account it keeps a
+**deque** of its failures from the last W seconds: new failures are appended, failures at or
+before `t − W` are dropped from the front. When the deque holds N failures the alarm is raised
+**immediately**; later triggers that share a failure with the open alarm extend it, as in §2.3.
+So the final list of alarms is identical to batch mode (tested, and checked by the `replay`
+command every time it runs).
 
-The list of alarms must be the same as in batch mode.
+| Measure | Definition |
+|---|---|
+| processing latency | real time from the arrival of the N-th failure to the alarm (the code's reaction time) |
+| time to alarm | real time from the arrival of the first failure of the window to the alarm = (trigger_ts − start_ts) / speedup + processing latency - the task's "time to alarm in a replayed stream" |
+| detection delay | the same in log time: trigger_ts − start_ts (at most W − 1 s) |
+| max lag | how late the slowest event was handled compared with its schedule (small = the detector keeps up) |
+
+The loop is plain Python: a stream is handled in order, one event at a time, so there is
+nothing to split between threads. Waiting uses `time.sleep` for long waits and a short spin for
+the last ~1.5 ms, so lag is not inflated by the sleep resolution.
+
+**Measured** (1 M events, 63 alarms, on the charger; `bench --what stream`):
+
+| Replay speed-up | Replay took | Time to alarm (real) p50 / p95 / max | Processing p50 / max | Max lag |
+|---|---|---|---|---|
+| ∞ (as fast as possible) | 0.18 s | 0.007 / 0.017 / 0.021 ms | 1.1 / 6.9 µs | - |
+| 100 000× | 6.0 s | 0.14 / 0.60 / 0.60 ms | 2.8 / 6.0 µs | 12 ms |
+| 10 000× | 60.5 s | 1.4 / 5.9 / 5.9 ms | 3.8 / 10.6 µs | 18 ms |
+
+The processing latency stays in microseconds at every speed; the time to alarm is the rule's
+log-time delay (median 14 s) divided by the speed-up. In real time an alarm therefore comes
+about 14 s after an attack starts - limited by the rule, not by the program.
 
 ---
 
@@ -515,7 +542,7 @@ also given with `encode` included. Numba compile time is excluded (one warm-up r
 | Data size | 0.1 M, 1 M, 5 M, 10 M | best setting of each backend |
 | GPU phases | — | stacked bar chart |
 | Rule parameters | W ∈ {10, 60, 300}, N ∈ {3, 5, 10} | precision / recall |
-| Stream | speed-up 100, 1000, ∞ | latency p50 / p95 |
+| Stream | speed-up ∞, 100 000×, 10 000× | time to alarm, processing latency, lag (p50 / p95 / max) |
 
 Each run is repeated 5 times and the median is reported. Run on the charger in "Best
 performance" mode. The i5-1235U has 2 fast P-cores and 8 slower E-cores, so the speed-up

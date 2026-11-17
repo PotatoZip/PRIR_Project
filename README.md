@@ -69,6 +69,7 @@ overrides the file for one run. Use `--config other.toml` for a different file.
 | `[bench]` | `repeats`, `threads` | 5, [1, 2, 4, 6, 8, 10, 12] | OpenMP benchmark: runs per setting, thread counts | `bench --what openmp` |
 | | `ranks`, `mpi_repeats` | [1, 2, 4, 6, 8], 3 | MPI benchmark: process counts, runs per setting (each run reloads the CSV) | `bench --what mpi` |
 | | `repeats` | 5 | OpenCL benchmark: GPU pipeline runs (load and encode are measured once) | `bench --what opencl` |
+| | `stream_speedups` | [inf, 100000, 10000] | stream benchmark: replay speeds (log seconds per real second; `inf` = no waiting) | `bench --what stream` |
 | | `sizes` | … | data-size benchmark (milestone M7) | — |
 
 Backend options (command line only):
@@ -79,6 +80,8 @@ Backend options (command line only):
 | `--threads N` | openmp, mpi | openmp: number of OpenMP threads; mpi: Numba threads per process (default 1 = pure MPI) |
 | `--split users\|time` | openmp | split work by accounts (default) or by time chunks with a halo |
 | `--device P:D` | opencl | OpenCL platform:device, as listed by `check`; default: the first GPU of a native platform (`0:0` on this laptop; Microsoft's `OpenCLOn12` is skipped) |
+| `--speedup S` | `replay` | seconds of log time per second of real time (`inf`, the default, = as fast as possible; 10000 replays a week in about a minute) |
+| `--out DIR` / `--no-check` | `replay` | save `alarms.csv`, `per_alarm.csv`, `replay.json` / skip the comparison with batch detection |
 | `mpiexec -n P …` | mpi | number of MPI processes, e.g. `mpiexec -n 4 python -m login_correlation detect --backend mpi …` (needs a terminal opened after MS-MPI was installed) |
 
 Environment variables (optional):
