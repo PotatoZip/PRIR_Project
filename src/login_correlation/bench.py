@@ -2,7 +2,8 @@
 
 Run:  python -m login_correlation bench --data data\\d10m
 
-Done so far (M3, M4): OpenMP and MPI strong scaling. Choose with --what all|openmp|mpi.
+Done so far (M3-M5): OpenMP and MPI scaling, OpenCL phase breakdown.
+Choose with --what all|openmp|mpi|opencl.
 
 OpenMP
     threads from config [bench].threads, both splits, each setting repeated [bench].repeats
@@ -17,8 +18,11 @@ MPI (M4)
     times are read from its timings.json.
     -> results\\bench_mpi.csv, results\\plots\\speedup_mpi.png
 
-Still to do (M5, M7, docs/ARCHITECTURE.md section 8.4):
-    opencl  phase breakdown encode / h2d / filter / sort / count / d2h / merge
+OpenCL (M5)
+    load and encode measured once, the GPU pipeline [bench].repeats times; every phase timed
+    -> results\\bench_opencl.csv, results\\plots\\opencl_phases.png
+
+Still to do (M7, docs/ARCHITECTURE.md section 8.4):
     all     sizes 0.1M, 1M, 5M, 10M  -> events/s
     quality W in {10, 60, 300}, N in {3, 5, 10} -> precision / recall
 """
@@ -180,8 +184,78 @@ def plot_mpi(summary: pd.DataFrame, out_png: str | Path) -> None:
     plt.close(fig)
 
 
+GPU_PHASES = ("gpu_prepare", "h2d", "filter", "sort", "count", "stats", "d2h", "merge")
+
+
+def opencl_phases(data_dir: str | Path, repeats: int, device: str | None = None) -> pd.DataFrame:
+    """Time every phase of backends/opencl.py. Loading and encoding the CSV are measured once
+    (they are the same for every run); the GPU pipeline is repeated `repeats` times.
+    One row per run; load and encode are copied into every row."""
+    import time
+
+    from login_correlation.backends import opencl
+
+    t = time.perf_counter()
+    df, registry = load_dataset(data_dir)
+    load_s = time.perf_counter() - t
+    t = time.perf_counter()
+    events = encode(df, registry)
+    encode_s = time.perf_counter() - t
+    rows = []
+    for r in range(repeats):
+        res = opencl.detect(events, RuleParams(), device=device)
+        rows.append({"repeat": r, "n_events": len(events), "load": load_s, "encode": encode_s,
+                     **{ph: res.timings[ph] for ph in GPU_PHASES},
+                     "gpu_total": res.timings["total"], "device": res.info["device"],
+                     "failures": res.info["failures"]})
+    print(f"  opencl on {rows[0]['device']}: median {pd.DataFrame(rows)['gpu_total'].median():.3f} s "
+          f"(load {load_s:.1f} s, encode {encode_s:.1f} s)")
+    return pd.DataFrame(rows)
+
+
+def plot_opencl(runs: pd.DataFrame, out_png: str | Path) -> None:
+    """Left: the whole way from CSV to alarms (shows how big encoding is).
+    Right: the GPU pipeline alone, phase by phase."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    med = runs.median(numeric_only=True)
+    fig, ax = plt.subplots(1, 2, figsize=(14, 4.8))
+
+    whole = {"load CSV": med["load"], "encode (text -> numbers)": med["encode"],
+             "GPU pipeline (all phases)": med["gpu_total"]}
+    ax[0].barh(list(whole), list(whole.values()), color=["tab:gray", "tab:red", "tab:blue"])
+    for k, (name, v) in enumerate(whole.items()):
+        ax[0].text(v, k, f" {v:.2f} s", va="center")
+    ax[0].set(title="From the CSV file to alarms", xlabel="seconds")
+    ax[0].invert_yaxis()
+
+    labels = {"gpu_prepare": "prepare (CPU)", "h2d": "copy to GPU", "filter": "filter (GPU)",
+              "sort": "radix sort (GPU)", "count": "window count (GPU)",
+              "stats": "per-user stats (GPU)", "d2h": "copy back", "merge": "alarms + tables (CPU)"}
+    vals = [med[ph] * 1000 for ph in GPU_PHASES]
+    ax[1].barh([labels[ph] for ph in GPU_PHASES], vals,
+               color=["tab:orange" if ph in ("gpu_prepare", "merge") else
+                      "tab:purple" if ph in ("h2d", "d2h") else "tab:blue" for ph in GPU_PHASES])
+    for k, v in enumerate(vals):
+        ax[1].text(v, k, f" {v:.1f} ms", va="center")
+    ax[1].set(title="GPU pipeline, phase by phase (median)", xlabel="milliseconds")
+    ax[1].invert_yaxis()
+    for a in ax:
+        a.grid(alpha=0.3, axis="x")
+    n = int(med["n_events"])
+    fig.suptitle(f"OpenCL (PyOpenCL) on {runs['device'].iloc[0]} - {n:,} events, "
+                 f"{int(med['failures']):,} failures")
+    fig.tight_layout()
+    Path(out_png).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_png, dpi=150)
+    plt.close(fig)
+
+
 def main(data_dir: str, settings: dict, out_dir: str = "results", what: str = "all") -> int:
-    """settings = the [bench] section of config/default.toml. what = all | openmp | mpi."""
+    """settings = the [bench] section of config/default.toml. what = all | openmp | mpi | opencl."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     repeats = int(settings.get("repeats", 5))
@@ -210,5 +284,15 @@ def main(data_dir: str, settings: dict, out_dir: str = "results", what: str = "a
         print(summary[cols].round(3).to_string(index=False))
         print(f"runs: {out / 'bench_mpi.csv'}   chart: {out / 'plots' / 'speedup_mpi.png'}")
 
-    print("(OpenCL and data-size experiments follow in milestones M5 and M7)")
+    if what in ("all", "opencl"):
+        print(f"OpenCL phases on {data_dir} (repeats={repeats})")
+        runs = opencl_phases(data_dir, repeats, settings.get("device"))
+        runs.to_csv(out / "bench_opencl.csv", index=False)
+        plot_opencl(runs, out / "plots" / "opencl_phases.png")
+        med = runs.median(numeric_only=True)
+        for ph in ("load", "encode", *GPU_PHASES, "gpu_total"):
+            print(f"  {ph:<12} {med[ph] * 1000:10.1f} ms")
+        print(f"runs: {out / 'bench_opencl.csv'}   chart: {out / 'plots' / 'opencl_phases.png'}")
+
+    print("(the data-size experiment follows in milestone M7)")
     return 0

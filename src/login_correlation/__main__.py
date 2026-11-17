@@ -96,7 +96,7 @@ def parse_args(argv):
 
     b = sub.add_parser("bench")
     b.add_argument("--data", required=True)
-    b.add_argument("--what", choices=["all", "openmp", "mpi"], default="all",
+    b.add_argument("--what", choices=["all", "openmp", "mpi", "opencl"], default="all",
                    help="which benchmark to run (default: all)")
     return p.parse_args(argv)
 
