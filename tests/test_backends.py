@@ -25,8 +25,12 @@ SAMPLE = PROJECT / "data" / "sample"
 BACKEND_VARIANTS = [
     ("openmp", {"split": "users", "threads": 1}),
     ("openmp", {"split": "users", "threads": 4}),
+    ("openmp", {"split": "users", "threads": 12}),
+    ("openmp", {"split": "users", "threads": 4, "balance": False}),
+    ("openmp", {"split": "time", "threads": 1}),
     ("openmp", {"split": "time", "threads": 2}),    # chunk border near the attack
     ("openmp", {"split": "time", "threads": 7}),
+    ("mpi", {}),            # in this process = MPI with 1 rank; more ranks: tests/test_mpi.py
     ("opencl", {}),
 ]
 

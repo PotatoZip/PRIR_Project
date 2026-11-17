@@ -66,17 +66,19 @@ overrides the file for one run. Use `--config other.toml` for a different file.
 | | `typo_rate` | 0.03 | share of normal logins with 1–2 typos first | — |
 | | `n_empty_users` | 50 | accounts in `users.csv` that have no events | — |
 | `[generator.scenarios]` | `<type> = count` | 3–40 | how many labelled scenarios of each type to insert (types: docs/ARCHITECTURE.md §8.1) | — |
-| `[bench]` | `repeats`, `sizes`, `threads`, `ranks` | 5, … | benchmark settings (milestone M7) | — |
+| `[bench]` | `repeats`, `threads` | 5, [1, 2, 4, 6, 8, 10, 12] | OpenMP benchmark: runs per setting, thread counts | `bench --what openmp` |
+| | `ranks`, `mpi_repeats` | [1, 2, 4, 6, 8], 3 | MPI benchmark: process counts, runs per setting (each run reloads the CSV) | `bench --what mpi` |
+| | `sizes` | … | data-size benchmark (milestone M7) | — |
 
 Backend options (command line only):
 
 | Option | Backend | Meaning |
 |---|---|---|
 | `--backend` | all | `reference` (default), `openmp`, `mpi`, `opencl` |
-| `--threads N` | openmp | number of OpenMP threads |
+| `--threads N` | openmp, mpi | openmp: number of OpenMP threads; mpi: Numba threads per process (default 1 = pure MPI) |
 | `--split users\|time` | openmp | split work by accounts (default) or by time chunks with a halo |
 | `--device P:D` | opencl | OpenCL platform:device; use `0:0` (native Intel driver) on this laptop |
-| `mpiexec -n P …` | mpi | number of MPI processes |
+| `mpiexec -n P …` | mpi | number of MPI processes, e.g. `mpiexec -n 4 python -m login_correlation detect --backend mpi …` (needs a terminal opened after MS-MPI was installed) |
 
 Environment variables (optional):
 

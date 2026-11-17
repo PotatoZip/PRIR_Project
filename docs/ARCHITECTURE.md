@@ -34,7 +34,7 @@ Each requirement from `Opis_Tematu.docx` is listed with the place in the code th
 | Correct at the edges of **data chunks** | binary-search design (§6); OpenMP time split with halo (§7.1); test with an attack cut by a chunk border | M2–M3 |
 | **OpenMP**: split accounts **or** groups of ordered events between threads | `backends/openmp.py`: `--split users` and `--split time` | M3 |
 | OpenMP: with a time split, give access to the events needed by windows at the edge | halo = the previous W s read from shared memory (§7.1) | M3 |
-| **MPI**: split by rule key (account); every alarm has one owner | `backends/mpi.py`, `owner = crc32(user) % P` | M4 |
+| **MPI**: split by rule key (account); every alarm has one owner | `backends/mpi.py`, `owner = crc32(user) % P` | M4 ✅ |
 | **OpenCL**: encode text, then filter, sort and count on the GPU; show encoding cost separately | `backends/opencl.py`, timed per phase | M5 |
 | Report: events exactly on the window edge, empty accounts, repeated timestamps | tests in `tests/test_rule.py` + generator scenarios (§8.1) | M0 ✅, M1 |
 | Report: precision, recall, events/s, time-to-alarm in a replayed stream | `evaluate.py`, `bench.py` | M2, M6, M7 |
@@ -158,7 +158,7 @@ PRIR_Project/
 │   ├── generator.py           synthetic data with labelled attacks
 │   ├── core.py                fast shared algorithm (Numba)
 │   ├── evaluate.py            precision/recall + stream replay
-│   ├── bench.py               benchmarks + charts
+│   ├── bench.py               benchmarks + charts (OpenMP and MPI done; rest in M7)
 │   ├── check_env.py           checks that OpenMP, MPI and OpenCL work
 │   └── backends/              the four versions of the detector
 │       ├── reference.py       plain Python = the correct answer
@@ -171,6 +171,8 @@ PRIR_Project/
 │   ├── test_rule.py           edge cases of the rule (run on reference AND core)
 │   ├── test_core.py           fast core: building blocks + core = reference
 │   ├── test_evaluate.py       precision / recall / delay on hand-made cases
+│   ├── test_openmp.py         OpenMP building blocks, time split with halo, benchmark code
+│   ├── test_mpi.py            MPI: ownership, partition, simulated ranks, real mpiexec runs
 │   ├── test_cli.py            command line + config on data/sample
 │   ├── test_generator.py      generator: format, repeatability, scenarios behave as labelled
 │   └── test_backends.py       every backend = reference (incl. MPI via mpiexec)
@@ -254,16 +256,35 @@ backends write identical CSV files.
 
 ## 7. Backends
 
-### 7.1 OpenMP (`backends/openmp.py`)
+### 7.1 OpenMP (`backends/openmp.py`) ✅
 Both ways of splitting named in the task are implemented, chosen with `--split`.
 
+**Shared preparation: `group_by_user` (radix partitioning, all in `prange`)**
+1. **Histogram:** each thread counts its events per *block of users* (a T × B table, B ≈ 50).
+2. **Prefix sum:** where each thread writes into each block.
+3. **Scatter:** each thread copies its events into the blocks (only B write positions per thread).
+4. **Per block:** one thread owns a whole block. It reads only that block's events, in order,
+   computes the statistics of its users (`n_events`, `n_fail`, `first_ts`, `last_ts`), and
+   copies the failures into the layout of §6 (sorting a user only if not already in time order).
+
+No thread writes where another one writes, so there are no locks and no final combine step.
+Three simpler designs were tried first and measured; each failed for a reason worth
+explaining in the report:
+
+| Try | Idea | What went wrong |
+|---|---|---|
+| 1 | per-thread partial arrays (T × U), combined at the end | 38 MB of scattered writes > 12 MB cache → slower with more threads |
+| 2 | full counting sort of all events by user | 90 MB written to random places → limited by memory speed |
+| 3 | "owner computes": every thread scans all events, keeps its users | random "is it mine?" test → branch mispredictions, 4× slower per thread |
+| 4 | **radix partitioning** (current) | scales: 224 ms → 90 ms on 12 threads |
+
 **Variant A, `--split users` (default): accounts between threads**
-* Filter and sort by (user, ts) with NumPy, then compute where each user's segment starts (`seg_offsets`).
-* `prange` over users: each thread gets a group of accounts. Each user's results go to its
-  own part of the output arrays, so there are **no races and no locks**.
-* **Load balancing:** an attacked account has far more events than a normal one. Two easy
-  fixes to try and compare: mix users by size before the loop, or use
-  `numba.set_parallel_chunksize(k)` (similar to OpenMP `schedule(dynamic,k)`).
+* `prange` over users (`core.window_counts`): each thread gets a group of accounts. Each
+  user's results go to its own part of the output arrays, so there are **no races and no locks**.
+* **Load balancing:** an attacked account has far more events than a normal one. Users are
+  sorted by size and dealt round-robin to the threads (`balanced_order`), because Numba
+  gives each thread one contiguous block of iterations, like OpenMP `schedule(static)`.
+  `balance=False` turns it off (both are tested).
 
 **Variant B, `--split time`: groups of time-ordered events, with a halo**
 ```
@@ -286,9 +307,35 @@ time ─────────────────────────
 
 **Both variants**
 * `--threads 1` is the sequential baseline for speed-up. It is the same code, so the comparison is fair.
-* The report compares A and B: speed, load balance, and the cost of the halo (the extra events read).
+* Numba compiles everything once (`warm_up`); that time is reported as `compile` and is not
+  part of `total`. `timings.json` also records `threads`, `split`, `threading_layer` (`omp`),
+  and for the time split `chunks` and `halo_events` (failures read twice because of the halo).
+* Benchmark: `python -m login_correlation bench --data data\d10m` → `results/bench_openmp.csv`
+  and `results/plots/speedup_openmp.png`.
 
-### 7.2 MPI (`mpi.py`)
+**Measured** (10 M events, 100 000 users, median of 5 runs, laptop on battery; on the charger
+12 threads reach about 3.8–4.1×, but with noisy runs - repeat with background apps closed):
+
+| Threads | split by accounts | speed-up | split by time + halo | speed-up |
+|---|---|---|---|---|
+| 1 | 0.285 s | 1.00 | 0.480 s | 1.00 |
+| 2 | 0.262 s | 1.09 | 0.353 s | 1.36 |
+| 4 | 0.228 s | 1.25 | 0.308 s | 1.56 |
+| 6 | 0.175 s | 1.63 | 0.246 s | 1.95 |
+| 8 | 0.147 s | 1.94 | 0.222 s | 2.16 |
+| 12 | 0.139 s | 2.05 | 0.197 s | 2.43 |
+
+Why the speed-up stays near 2–2.5× (good material for the report):
+* **Amdahl's law:** building the output tables (`alarms_frame`, `summary_frame`, about 45 ms) is sequential.
+* **Memory speed:** the per-event work is tiny (a few additions), so preparing 10 M events
+  is limited by how fast memory can be read and written, not by the number of cores.
+* **Hardware:** the i5-1235U has 2 fast P-cores and 8 slower E-cores, so threads 5–12 add less.
+* The **counting kernel alone scales well**: in the time split it goes from 0.140 s to 0.014 s
+  (10×), which shows the halo approach works in parallel.
+* Variant B is slower overall because it must also sort the failures by time and sort each
+  chunk locally; in exchange it shows correct results across chunk borders.
+
+### 7.2 MPI (`backends/mpi.py`) ✅
 ```mermaid
 sequenceDiagram
     participant R0 as rank 0
@@ -306,6 +353,40 @@ sequenceDiagram
   duplicates are possible.
 * `crc32` is used instead of Python's `hash()`, because `hash()` gives different values in different processes.
 * The phases scatter, compute and gather are timed with `MPI.Wtime()`.
+
+**Implementation** (`src/login_correlation/backends/mpi.py`):
+
+| Step | Where | How |
+|---|---|---|
+| partition | rank 0 | `owner_of` for every account; each account gets a local id inside its owner; a one-pass counting sort (Numba `_group_by_owner`) puts each rank's events into one block, keeping file order (needed for equal timestamps) |
+| scatter | all | `comm.scatter` of the account names (small, pickled), then `comm.Scatterv` of `ts` (int64), `user_id` (int32), `is_fail` (uint8) - NumPy buffers, no pickling |
+| compute | all | `core.detect` on the rank's own accounts - the same tested algorithm; one Numba thread per process by default (`--threads` for hybrid MPI + threads) |
+| gather | all → 0 | `comm.gather` of each rank's alarms and summary, then `merge()` = concatenate + normalize |
+
+`partition()` and `merge()` do not use MPI, so the tests can simulate any number of ranks in
+one process (partition → `core.detect` per part → merge must equal the reference) and also
+run the real program with `mpiexec`.
+
+**Measured** (10 M events, 100 000 users, median of 3 runs, on the charger):
+
+| Processes | partition | scatter | compute (slowest rank) | gather | whole detection | speed-up |
+|---|---|---|---|---|---|---|
+| 1 | 0.12 s | 0.06 s | 0.270 s | 0.06 s | 0.50 s | 1.00 |
+| 2 | 0.35 s | 0.09 s | 0.242 s | 0.09 s | 0.78 s | 0.64 |
+| 4 | 0.32 s | 0.07 s | 0.139 s | 0.09 s | 0.62 s | 0.80 |
+| 6 | 0.24 s | 0.06 s | 0.114 s | 0.11 s | 0.62 s | 0.81 |
+| 8 | 0.31 s | 0.07 s | 0.094 s | 0.12 s | 0.63 s | 0.79 |
+
+The local computation scales (0.27 s → 0.094 s, 2.9× on 8 processes), but the whole
+detection on **one laptop** does not get faster:
+* **Amdahl + communication:** rank 0 alone partitions, scatters and gathers (≈ 0.5 s), which is
+  more than the entire computation on one process. With MPI the data has to be *moved* to the
+  processes; with OpenMP the threads simply share it.
+* **Waiting processes are not idle:** partitioning on rank 0 takes 0.12 s alone but ~0.3 s while
+  other ranks wait in `Scatterv`. MS-MPI waits by polling, which most likely takes CPU time and
+  memory bandwidth from rank 0.
+* On a real cluster each node would read its own part of the input, so most of the
+  partition/scatter cost would disappear - the design itself (one owner per account) does not change.
 * It runs as several processes on the laptop (`mpiexec -n 4 …`). The same code would also run on a cluster.
 * *Optional extra (only if there is time):* time chunks with an overlap of W s. Rank r gets
   `(T_r − W, T_{r+1})` but only reports alarms that **start** in `[T_r, T_{r+1})`, so each

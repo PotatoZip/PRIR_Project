@@ -109,6 +109,7 @@ class DetectionResult:
     alarms: pd.DataFrame       # ALARM_COLUMNS, sorted by (user, start_ts)
     summary: pd.DataFrame      # SUMMARY_COLUMNS, sorted by user
     timings: dict[str, float] = field(default_factory=dict)
+    info: dict = field(default_factory=dict)   # extra facts for timings.json (threads, layer, ...)
 
 
 def make_alarm_id(user: str, start_ts: int) -> str:
@@ -208,7 +209,9 @@ def encode(df: pd.DataFrame, registry: list[str] | None = None) -> EventArrays:
 
     ip_codes, ip_names = pd.factorize(df["src_ip"], use_na_sentinel=False)
     return EventArrays(
-        ts=df["ts"].to_numpy(dtype=np.int64),
+        # copy=True: pandas 3 may hand out a read-only view, and Numba would then compile
+        # every function a second time (for read-only input) on the first real call
+        ts=df["ts"].to_numpy(dtype=np.int64, copy=True),
         user_id=user_id,
         ip_id=ip_codes.astype(np.int32),
         is_fail=(df["result"] == FAIL).to_numpy(dtype=bool, na_value=False).astype(np.uint8),
